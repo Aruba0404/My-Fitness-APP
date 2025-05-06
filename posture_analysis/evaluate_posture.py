@@ -1,29 +1,74 @@
+import streamlit as st
 from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from logic.timer_utils import PlankTimer
+from logic.timer_utils import update_plank_timer
 
-def evaluate_posture(pose_landmarks, exercise_type, analyzer=None, timer=None):
+# Initialize analyzers once
+if "squat_tracker" not in st.session_state:
+    st.session_state.squat_tracker = SquatAnalyzer()
+if "pushup_tracker" not in st.session_state:
+    st.session_state.pushup_tracker = PushupAnalyzer()
+
+def evaluate_posture(landmarks, width, height, exercise):
     """
-    Evaluate posture and return: feedback_text, rep_count, incorrect_count, accuracy_score.
+    Returns (correct, incorrect, feedback) for squat and push-up.
+    For plank, returns (duration, "-", feedback).
     """
 
-    if pose_landmarks is None:
-        return "", 0, 0, 0
+    if not landmarks or len(landmarks) < 33:
+        return 0, 0, "Pose not fully visible."
 
-    feedback_text = ""
-    accuracy_score = 0
-    rep_count = 0
-    incorrect_count = 0
+    exercise = exercise.strip().lower()
 
-    if exercise_type == "Squat" and analyzer:
-        feedback_text, rep_count, incorrect_count, accuracy_score = analyzer.analyze(pose_landmarks)
+    # 🏋️ SQUAT MODE
+    if exercise == "squats":
+        try:
+            correct, incorrect, feedback, state = st.session_state.squat_tracker.update(
+                landmarks, width, height
+            )
+        except:
+            return 0, 0, "Squat tracking error."
 
-    elif exercise_type == "Pushup" and analyzer:
-        feedback_text, rep_count, incorrect_count, accuracy_score = analyzer.analyze(pose_landmarks)
+        if state == "too_shallow":
+            feedback = "Lower your hips to reach squat depth."
+        elif state == "too_low":
+            feedback = "You're going too low — raise slightly."
+        elif state == "mid":
+            feedback = "Almost there. Go slightly deeper."
+        elif state == "perfect":
+            feedback = "Perfect squat! Hold it."
+        elif state == "standing":
+            feedback = "Stand tall. Ready for next rep."
 
-    elif exercise_type == "Plank" and timer:
-        feedback_text, timer_state = timer.update(pose_landmarks)
-        accuracy_score = timer.get_accuracy_score()
-        rep_count = timer.get_elapsed_time()
-        incorrect_count = timer.incorrect_hold_count
+        return correct, incorrect, feedback
 
-    return feedback_text, rep_count, incorrect_count, accuracy_score
+    # 🤸 PUSH-UP MODE
+    elif exercise == "push-ups":
+        try:
+            correct, incorrect, feedback, state = st.session_state.pushup_tracker.update(
+                landmarks, width, height
+            )
+        except:
+            return 0, 0, "Push-up tracking error."
+
+        if state == "too_shallow":
+            feedback = "Go lower for a full push-up."
+        elif state == "too_low":
+            feedback = "Too low — raise slightly."
+        elif state == "mid":
+            feedback = "Almost there — lower a bit more."
+        elif state == "perfect":
+            feedback = "Perfect push-up!"
+        elif state == "up":
+            feedback = "Hold the plank position."
+
+        return correct, incorrect, feedback
+
+    # 🪵 PLANK MODE
+    elif exercise == "planks":
+        try:
+            duration, is_good, feedback = update_plank_timer(landmarks, width, height)
+        except:
+            return 0, 0, "Plank tracking error."
+        return duration, "-", feedback
+
+    return 0, 0, "Unknown exercise selected."

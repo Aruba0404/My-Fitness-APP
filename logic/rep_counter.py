@@ -1,79 +1,127 @@
 import math
-import time
 from collections import deque
 from logic.angle_utils import calculate_angle
 
 
-class BaseExerciseAnalyzer:
+class BaseAnalyzer:
     def __init__(self, up_threshold, down_threshold, valid_angle_range):
         self.state = "UP"
         self.rep_count = 0
         self.incorrect_count = 0
-        self.feedback = ""
         self.prev_angles = deque(maxlen=5)
         self.up_threshold = up_threshold
         self.down_threshold = down_threshold
-        self.valid_angle_range = valid_angle_range
+        self.valid_range = valid_angle_range
 
-    def _update_common(self, avg_angle):
-        self.prev_angles.append(avg_angle)
-        delta = self.prev_angles[-1] - self.prev_angles[0] if len(self.prev_angles) == 5 else 0
-        return delta
+    def _update_angle(self, angle):
+        self.prev_angles.append(angle)
+        if len(self.prev_angles) < 5:
+            return 0
+        return self.prev_angles[-1] - self.prev_angles[0]
 
-    def _check_rep(self, avg_angle, delta):
-        raise NotImplementedError("Implement this method in subclasses")
-
-    def update(self, landmarks):
-        raise NotImplementedError("Implement this method in subclasses")
+    def get_common_outputs(self, correct, incorrect, feedback, posture):
+        return correct, incorrect, feedback, posture
 
 
-class SquatAnalyzer(BaseExerciseAnalyzer):
+class SquatAnalyzer(BaseAnalyzer):
     def __init__(self):
         super().__init__(up_threshold=160, down_threshold=90, valid_angle_range=(80, 100))
 
-    def update(self, landmarks):
-        left_angle = calculate_angle(landmarks[23], landmarks[25], landmarks[27])
-        right_angle = calculate_angle(landmarks[24], landmarks[26], landmarks[28])
-        avg_angle = (left_angle + right_angle) / 2
-        delta = self._update_common(avg_angle)
+    def update(self, landmarks, width, height):
+        try:
+            hip = (int(landmarks[23].x * width), int(landmarks[23].y * height))
+            knee = (int(landmarks[25].x * width), int(landmarks[25].y * height))
+            ankle = (int(landmarks[27].x * width), int(landmarks[27].y * height))
+            angle = calculate_angle(hip, knee, ankle)
 
-        if avg_angle < self.down_threshold and self.state == "UP" and delta < -10:
-            self.state = "DOWN"
-            self.feedback = "Going down..."
+            delta = self._update_angle(angle)
+            feedback = ""
+            posture = ""
 
-        elif avg_angle > self.up_threshold and self.state == "DOWN" and delta > 10:
-            self.state = "UP"
-            if self.valid_angle_range[0] <= min(self.prev_angles) <= self.valid_angle_range[1]:
-                self.rep_count += 1
-                self.feedback = "✅ Perfect Squat!"
-            else:
-                self.incorrect_count += 1
-                self.feedback = "❌ Incomplete Squat – Try deeper!"
+            if angle > 165:
+                posture = "standing"
+                feedback = "Stand tall. Prepare for squat."
+                self.state = "UP"
 
-        return self.rep_count, self.feedback, self.incorrect_count
+            elif 80 <= angle <= 100:
+                posture = "perfect"
+                feedback = "Perfect squat!"
+                if self.state == "UP" and delta < -10:
+                    self.rep_count += 1
+                    self.state = "DOWN"
+
+            elif angle < 70:
+                posture = "too_low"
+                feedback = "You're going too low. Raise slightly."
+                if self.state == "UP":
+                    self.incorrect_count += 1
+                    self.state = "DOWN"
+
+            elif angle < 80:
+                posture = "too_shallow"
+                feedback = "Go lower to reach squat depth."
+
+            elif angle > 100:
+                posture = "mid"
+                feedback = "Almost there. Keep going lower."
+
+            return self.get_common_outputs(self.rep_count, self.incorrect_count, feedback, posture)
+
+        except Exception as e:
+            return self.get_common_outputs(self.rep_count, self.incorrect_count, f"[Squat ERROR] {e}", "error")
 
 
-class PushupAnalyzer(BaseExerciseAnalyzer):
+class PushupAnalyzer(BaseAnalyzer):
     def __init__(self):
         super().__init__(up_threshold=150, down_threshold=90, valid_angle_range=(80, 100))
 
-    def update(self, landmarks):
-        left_angle = calculate_angle(landmarks[11], landmarks[13], landmarks[15])
-        right_angle = calculate_angle(landmarks[12], landmarks[14], landmarks[16])
-        avg_angle = (left_angle + right_angle) / 2
-        delta = self._update_common(avg_angle)
+    def update(self, landmarks, width, height):
+        try:
+            shoulder = (int(landmarks[11].x * width), int(landmarks[11].y * height))
+            elbow = (int(landmarks[13].x * width), int(landmarks[13].y * height))
+            wrist = (int(landmarks[15].x * width), int(landmarks[15].y * height))
+            angle = calculate_angle(shoulder, elbow, wrist)
 
-        if avg_angle < self.down_threshold and self.state == "UP" and delta < -10:
-            self.state = "DOWN"
-            self.feedback = "Lowering..."
+            delta = self._update_angle(angle)
+            feedback = ""
+            posture = ""
 
-        elif avg_angle > self.up_threshold and self.state == "DOWN" and delta > 10:
-            self.state = "UP"
-            if self.valid_angle_range[0] <= min(self.prev_angles) <= self.valid_angle_range[1]:
-                self.rep_count += 1
-                self.feedback = "✅ Pushup Done!"
-            else:
-                self.incorrect_count += 1
-                self.feedback = "❌ Not Low Enough"
+            if angle > 165:
+                posture = "up"
+                feedback = "Hold the plank position."
+                self.state = "UP"
 
-        return self.rep_count, self.feedback, self.incorrect_count
+            elif 75 <= angle <= 100:
+                posture = "perfect"
+                feedback = "Perfect push-up!"
+                if self.state == "UP" and delta < -10:
+                    self.rep_count += 1
+                    self.state = "DOWN"
+
+            elif angle < 60:
+                posture = "too_low"
+                feedback = "You're going too low. Raise slightly."
+                if self.state == "UP":
+                    self.incorrect_count += 1
+                    self.state = "DOWN"
+
+            elif angle < 75:
+                posture = "too_shallow"
+                feedback = "Go lower for a full push-up."
+
+            elif angle > 100:
+                posture = "mid"
+                feedback = "Almost there. Lower a bit more."
+
+            return self.get_common_outputs(self.rep_count, self.incorrect_count, feedback, posture)
+
+        except Exception as e:
+            return self.get_common_outputs(self.rep_count, self.incorrect_count, f"[Push-up ERROR] {e}", "error")
+
+
+class PlankAnalyzer:
+    def update(self, landmarks, width, height):
+        """
+        Placeholder for plank analysis logic.
+        """
+        return "-", "-", "Plank posture being analyzed...", "plank"
