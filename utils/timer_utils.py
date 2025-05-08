@@ -52,20 +52,34 @@ def calculate_angle(a, b, c):
         print(f"[ERROR] Angle calculation failed: {e}")
         return None
 
-# 🚀 NEW CLASS: PlankAnalyzer using PlankTimer internally
+# 🔍 PlankAnalyzer now returns posture state and detailed feedback
 class PlankAnalyzer:
     def __init__(self):
         self.timer = PlankTimer()
 
     def update(self, landmarks):
         try:
-            shoulder = landmarks[11]
-            hip = landmarks[23]
-            ankle = landmarks[27]
-            angle = calculate_angle(shoulder, hip, ankle)
+            left_shoulder = landmarks[11]
+            left_hip = landmarks[23]
+            left_ankle = landmarks[27]
 
+            angle = calculate_angle(left_shoulder, left_hip, left_ankle)
             duration, is_good = self.timer.update(angle)
-            feedback = "Great form! Hold steady. 🔥" if is_good else "Keep your body straight and aligned. 🧘"
-            return duration, is_good, feedback
+
+            # Classify posture state
+            if angle is None:
+                state = "not_visible"
+                feedback = "Body not detected clearly. 📷"
+            elif angle < 150:
+                state = "hips_down"
+                feedback = "Raise your hips! 🔼"
+            elif angle > 185:
+                state = "hips_up"
+                feedback = "Lower your hips! 🔽"
+            else:
+                state = "perfect"
+                feedback = "Perfect plank! Hold steady. 💪"
+
+            return round(duration, 2), is_good, feedback
         except Exception as e:
             return 0, False, f"[Plank ERROR] {e}"

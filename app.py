@@ -3,7 +3,7 @@ import cv2
 import tempfile
 import mediapipe as mp
 from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from logic.timer_utils import PlankTimer
+from utils.timer_utils import PlankTimer
 from posture_analysis.evaluate_posture import evaluate_posture
 from pose_estimation.draw_landmarks import draw_landmarks
 from utils.text_to_speech import audio_feedback  # Ensure you import audio_feedback
@@ -100,7 +100,6 @@ def run_live_feedback(exercise):
 
     cap.release()
     st.success("Session Ended")
-
 
 def show_upload_video():
     st.header("🎞️ Upload Mode")

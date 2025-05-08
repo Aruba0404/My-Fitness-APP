@@ -1,64 +1,108 @@
 import cv2
-import mediapipe as mp
-from logic.angle_utils import calculate_angle  # You must have this function
+import numpy as np
+from collections import deque
 
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+# 🎨 Colors for feedback
+COLORS = {
+    "perfect": (0, 255, 0),      # Green
+    "mid": (0, 255, 255),        # Yellow
+    "too_low": (0, 128, 255),    # Orange
+    "too_shallow": (0, 0, 255),  # Red
+    "default": (255, 255, 255)   # White
+}
 
-def get_feedback_color(text):
-    if "❌" in text or "too" in text.lower():
-        return (0, 0, 255)
-    elif "⬇️" in text:
-        return (0, 255, 255)
-    return (0, 255, 0)
+# ✨ Smooth angle history (for better visuals)
+angle_history = {
+    "knee": deque(maxlen=5),
+    "elbow": deque(maxlen=5),
+    "hip": deque(maxlen=5)
+}
 
-def draw_landmarks(landmark_obj, frame, feedback_text=None, rep_count=None, show_labels=True):
-    if not landmark_obj or not hasattr(landmark_obj, 'landmark'):
-        return frame
+def draw_landmarks(image, landmarks, state=None, show_angles=True):
+    if not landmarks or len(landmarks) < 33:
+        return image
 
-    mp_drawing.draw_landmarks(
-        image=frame,
-        landmark_list=landmark_obj,
-        connections=mp_pose.POSE_CONNECTIONS,
-        landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4),
-        connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2, circle_radius=2)
-    )
+    # 🦵 Squat: Knee angle
+    left_hip = landmarks[23]
+    left_knee = landmarks[25]
+    left_ankle = landmarks[27]
 
-    h, w = frame.shape[:2]
-    lm = landmark_obj.landmark
+    # 💪 Pushup: Elbow angle
+    left_shoulder = landmarks[11]
+    left_elbow = landmarks[13]
+    left_wrist = landmarks[15]
 
-    def get_point(idx):
-        return int(lm[idx].x * w), int(lm[idx].y * h)
+    # 🪵 Plank: Hip angle (shoulder-hip-ankle)
+    shoulder = landmarks[11]
+    hip = landmarks[23]
+    ankle = landmarks[27]
 
-    def draw_angle(a, b, c, label):
-        angle = int(calculate_angle(lm[a], lm[b], lm[c]) or 0)
-        px, py = get_point(b)
-        cv2.putText(frame, f"{label}: {angle}°", (px + 10, py - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    # --- Helper: Draw lines and dots
+    def draw_line(pt1, pt2, color=(255, 255, 255), thickness=2):
+        x1, y1 = int(pt1.x * image.shape[1]), int(pt1.y * image.shape[0])
+        x2, y2 = int(pt2.x * image.shape[1]), int(pt2.y * image.shape[0])
+        cv2.line(image, (x1, y1), (x2, y2), color, thickness)
 
-    # Show angles for: knee, hip, and elbow (both sides)
-    try:
-        draw_angle(23, 25, 27, "LKnee")   # Left Knee
-        draw_angle(11, 23, 25, "LHip")    # Left Hip
-        draw_angle(13, 11, 23, "LTrunk")  # Left Trunk
-        draw_angle(11, 13, 15, "LElbow")  # Left Elbow
-        draw_angle(24, 26, 28, "RKnee")   # Right Knee
-        draw_angle(12, 24, 26, "RHip")    # Right Hip
-        draw_angle(14, 12, 24, "RTrunk")  # Right Trunk
-        draw_angle(12, 14, 16, "RElbow")  # Right Elbow
-    except:
-        pass  # Avoid crash if landmark is missing
+    def draw_circle(pt, color=(255, 255, 255), radius=6):
+        x, y = int(pt.x * image.shape[1]), int(pt.y * image.shape[0])
+        cv2.circle(image, (x, y), radius, color, -1)
 
-    # Feedback text
-    if feedback_text:
-        color = get_feedback_color(feedback_text)
-        y_pos = frame.shape[0] - 20
-        cv2.putText(frame, feedback_text, (10, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3, cv2.LINE_AA)
+    # --- Helper: Angle calculation
+    def calculate_angle(a, b, c):
+        a = np.array([a.x, a.y])
+        b = np.array([b.x, b.y])
+        c = np.array([c.x, c.y])
 
-    # Rep count
-    if rep_count is not None and rep_count != "-":
-        cv2.putText(frame, f"Reps: {rep_count}", (10, frame.shape[0] - 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
+        ba = a - b
+        bc = c - b
 
-    return frame
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        angle = np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
+        return int(angle)
+
+    # --- Draw Pose Lines and Angles
+    feedback_color = COLORS.get(state, COLORS["default"])
+
+    # Squat knee angle
+    knee_angle = calculate_angle(left_hip, left_knee, left_ankle)
+    angle_history["knee"].append(knee_angle)
+    smoothed_knee = int(np.mean(angle_history["knee"]))
+
+    draw_line(left_hip, left_knee, feedback_color)
+    draw_line(left_knee, left_ankle, feedback_color)
+    draw_circle(left_knee, feedback_color)
+
+    if show_angles:
+        cv2.putText(image, f'Knee: {smoothed_knee}°', 
+                    (int(left_knee.x * image.shape[1]) - 50, int(left_knee.y * image.shape[0]) - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
+
+    # Push-up elbow angle
+    elbow_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
+    angle_history["elbow"].append(elbow_angle)
+    smoothed_elbow = int(np.mean(angle_history["elbow"]))
+
+    draw_line(left_shoulder, left_elbow, feedback_color)
+    draw_line(left_elbow, left_wrist, feedback_color)
+    draw_circle(left_elbow, feedback_color)
+
+    if show_angles:
+        cv2.putText(image, f'Elbow: {smoothed_elbow}°',
+                    (int(left_elbow.x * image.shape[1]) - 50, int(left_elbow.y * image.shape[0]) - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
+
+    # Plank hip angle
+    hip_angle = calculate_angle(shoulder, hip, ankle)
+    angle_history["hip"].append(hip_angle)
+    smoothed_hip = int(np.mean(angle_history["hip"]))
+
+    draw_line(shoulder, hip, feedback_color)
+    draw_line(hip, ankle, feedback_color)
+    draw_circle(hip, feedback_color)
+
+    if show_angles:
+        cv2.putText(image, f'Hip: {smoothed_hip}°',
+                    (int(hip.x * image.shape[1]) - 50, int(hip.y * image.shape[0]) - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
+
+    return image

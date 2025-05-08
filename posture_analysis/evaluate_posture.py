@@ -1,8 +1,8 @@
 import streamlit as st
 from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from logic.timer_utils import PlankAnalyzer
+from utils.timer_utils import PlankAnalyzer
 
-# Initialize analyzers once
+# 🧠 Initialize analyzers in session state only once
 if "squat_tracker" not in st.session_state:
     st.session_state.squat_tracker = SquatAnalyzer()
 
@@ -14,60 +14,72 @@ if "plank_tracker" not in st.session_state:
 
 def evaluate_posture(landmarks, width, height, exercise):
     """
-    Returns (correct, incorrect, feedback) for squat and push-up.
-    For plank, returns (duration, "-", feedback).
+    Evaluates the current posture based on the exercise type.
+    Returns (correct_count, incorrect_count, feedback_text) for squats and push-ups,
+    or (duration, '-', feedback_text) for planks.
     """
     if not landmarks or len(landmarks) < 33:
-        return 0, 0, "Pose not fully visible."
+        return 0, 0, "⚠️ Pose not fully visible."
 
     exercise = exercise.strip().lower()
 
-    # 🏋️ SQUAT MODE
+    # 🏋️ SQUATS
     if exercise == "squats":
         try:
-            correct, incorrect, feedback, state = st.session_state.squat_tracker.update(landmarks, width, height)
-            feedback = get_squat_feedback(state, feedback)
+            correct, incorrect, raw_feedback, state = st.session_state.squat_tracker.update(landmarks, width, height)
+            feedback = get_squat_feedback(state, raw_feedback)
         except Exception as e:
-            return 0, 0, f"Squat tracking error: {str(e)}"
+            return 0, 0, f"❌ Squat tracking error: {str(e)}"
         return correct, incorrect, feedback
 
-    # 🤸 PUSH-UP MODE
+    # 🤸 PUSH-UPS
     elif exercise == "pushups":
         try:
-            correct, incorrect, feedback, state = st.session_state.pushup_tracker.update(landmarks, width, height)
-            feedback = get_pushup_feedback(state, feedback)
+            correct, incorrect, raw_feedback, state = st.session_state.pushup_tracker.update(landmarks, width, height)
+            feedback = get_pushup_feedback(state, raw_feedback)
         except Exception as e:
-            return 0, 0, f"Push-up tracking error: {str(e)}"
+            return 0, 0, f"❌ Push-up tracking error: {str(e)}"
         return correct, incorrect, feedback
 
-    # 🪵 PLANK MODE
+    # 🪵 PLANKS
     elif exercise == "planks":
         try:
-            duration, is_good, feedback = st.session_state.plank_tracker.update(landmarks)
+            duration, state, raw_feedback = st.session_state.plank_tracker.update(landmarks)
+            feedback = get_plank_feedback(state, raw_feedback)
         except Exception as e:
-            return 0, 0, f"Plank tracking error: {str(e)}"
+            return 0, 0, f"❌ Plank tracking error: {str(e)}"
         return duration, "-", feedback
 
-    return 0, 0, "Unknown exercise selected."
+    return 0, 0, "⚠️ Unknown exercise selected."
 
-def get_squat_feedback(state, feedback):
-    """Generate feedback based on the squat state."""
+# 🎯 Squat Feedback
+def get_squat_feedback(state, fallback):
     feedback_dict = {
-        "too_shallow": "Lower your hips to reach squat depth.",
-        "too_low": "You're going too low — raise slightly.",
-        "mid": "Almost there. Go slightly deeper.",
-        "perfect": "Perfect squat! Hold it.",
-        "standing": "Stand tall. Ready for next rep."
+        "too_shallow": "⬇️ Lower your hips to reach squat depth.",
+        "too_low": "⬆️ You're going too low — raise slightly.",
+        "mid": "↕️ Almost there. Go slightly deeper.",
+        "perfect": "✅ Perfect squat! Hold it.",
+        "standing": "🧍 Stand tall. Ready for next rep."
     }
-    return feedback_dict.get(state, feedback)
+    return feedback_dict.get(state, fallback)
 
-def get_pushup_feedback(state, feedback):
-    """Generate feedback based on the push-up state."""
+# 💪 Push-up Feedback
+def get_pushup_feedback(state, fallback):
     feedback_dict = {
-        "too_shallow": "Go lower for a full push-up.",
-        "too_low": "Too low — raise slightly.",
-        "mid": "Almost there — lower a bit more.",
-        "perfect": "Perfect push-up!",
-        "up": "Hold the plank position."
+        "too_shallow": "⬇️ Go lower for a full push-up.",
+        "too_low": "⬆️ Too low — raise slightly.",
+        "mid": "↕️ Almost there — lower a bit more.",
+        "perfect": "✅ Perfect push-up!",
+        "up": "📏 Hold the plank position."
     }
-    return feedback_dict.get(state, feedback)
+    return feedback_dict.get(state, fallback)
+
+# 🪵 Plank Feedback
+def get_plank_feedback(state, fallback):
+    feedback_dict = {
+        "hips_up": "⬇️ Lower your hips to keep a flat back.",
+        "hips_down": "⬆️ Lift your hips to avoid sagging.",
+        "perfect": "✅ Perfect plank posture! Keep holding.",
+        "start": "📢 Get into plank position — back straight, core tight!"
+    }
+    return feedback_dict.get(state, fallback)

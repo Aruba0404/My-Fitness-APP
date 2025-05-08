@@ -1,12 +1,24 @@
 import numpy as np
 
 def calculate_angle(a, b, c):
-    """Calculate angle between 3 Mediapipe landmarks"""
-    a = np.array([a.x, a.y])  # First
-    b = np.array([b.x, b.y])  # Middle
-    c = np.array([c.x, c.y])  # End
+    """
+    Calculate angle between three Mediapipe landmarks: a, b, and c.
+    Returns the angle in degrees between 0 and 180.
+    """
+    try:
+        a = np.array([a.x, a.y])
+        b = np.array([b.x, b.y])
+        c = np.array([c.x, c.y])
 
-    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
+        ba = a - b
+        bc = c - b
 
-    return angle if angle <= 180 else 360 - angle
+        # Calculate angle between vectors
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)  # Avoid numerical errors
+
+        angle = np.degrees(np.arccos(cosine_angle))
+        return angle
+
+    except Exception as e:
+        return None  # or return 0 if you prefer
