@@ -2,43 +2,47 @@ import mediapipe as mp
 import cv2
 import time
 
-# High-accuracy BlazePose with upgraded model complexity
 mp_pose = mp.solutions.pose
 
-pose = mp_pose.Pose(
-    static_image_mode=False,
-    model_complexity=2,  # Better accuracy than default (0 or 1)
-    enable_segmentation=False,
-    min_detection_confidence=0.7,  # Avoid false detections
-    min_tracking_confidence=0.7    # Better tracking stability
-)
+def get_pose_model():
+    """
+    Returns a configured MediaPipe Pose object.
+    Use within a 'with' block to manage resources properly.
+    """
+    return mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        enable_segmentation=False,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.7
+    )
 
-def detect_pose(frame):
+def detect_pose(frame, pose_model, debug=False):
     """
     Detect pose landmarks using MediaPipe BlazePose.
-    Returns (landmarks, results) or (None, None) if detection fails.
+    
+    Args:
+        frame (np.ndarray): Input video frame.
+        pose_model: A MediaPipe pose object created from get_pose_model().
+        debug (bool): If True, prints logs for debugging.
+
+    Returns:
+        tuple: (landmarks_list, full_results) or (None, None) on failure.
     """
     try:
-        # Start timer to measure processing time
         start_time = time.time()
-
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(image_rgb)
+        results = pose_model.process(image_rgb)
 
-        # Log the confidence levels for debugging
-        detection_confidence = results.pose_landmarks is not None
-        tracking_confidence = results.pose_landmarks is not None
-
-        if detection_confidence and tracking_confidence:
-            # Log successful detection
-            print(f"[INFO] Pose detected with confidence. Time taken: {time.time() - start_time:.4f}s")
+        if results.pose_landmarks:
+            if debug:
+                print(f"[INFO] Pose detected. Time: {time.time() - start_time:.4f}s")
             return results.pose_landmarks.landmark, results
         else:
-            # Log failure or low confidence
-            print(f"[WARNING] Pose detection failed or had low confidence. Time taken: {time.time() - start_time:.4f}s")
+            if debug:
+                print(f"[WARNING] Pose not detected. Time: {time.time() - start_time:.4f}s")
             return None, None
 
     except Exception as e:
-        # Enhanced error logging
         print(f"[ERROR] Pose detection failed: {e}")
         return None, None
