@@ -1,108 +1,85 @@
 import cv2
-import numpy as np
-from collections import deque
+import mediapipe as mp
+import math
 
-# 🎨 Colors for feedback
-COLORS = {
-    "perfect": (0, 255, 0),      # Green
-    "mid": (0, 255, 255),        # Yellow
-    "too_low": (0, 128, 255),    # Orange
-    "too_shallow": (0, 0, 255),  # Red
-    "default": (255, 255, 255)   # White
-}
+mp_drawing = mp.solutions.drawing_utils
+mp_pose = mp.solutions.pose
 
-# ✨ Smooth angle history (for better visuals)
-angle_history = {
-    "knee": deque(maxlen=5),
-    "elbow": deque(maxlen=5),
-    "hip": deque(maxlen=5)
-}
+# ------------------ ANGLE CALCULATION ------------------
+def calculate_angle(a, b, c):
+    try:
+        a = [a.x, a.y]
+        b = [b.x, b.y]
+        c = [c.x, c.y]
 
-def draw_landmarks(image, landmarks, state=None, show_angles=True):
-    if not landmarks or len(landmarks) < 33:
-        return image
+        ba = [a[0] - b[0], a[1] - b[1]]
+        bc = [c[0] - b[0], c[1] - b[1]]
 
-    # 🦵 Squat: Knee angle
-    left_hip = landmarks[23]
-    left_knee = landmarks[25]
-    left_ankle = landmarks[27]
+        dot_product = ba[0]*bc[0] + ba[1]*bc[1]
+        mag_ba = math.hypot(ba[0], ba[1])
+        mag_bc = math.hypot(bc[0], bc[1])
+        if mag_ba == 0 or mag_bc == 0:
+            return 0
 
-    # 💪 Pushup: Elbow angle
-    left_shoulder = landmarks[11]
-    left_elbow = landmarks[13]
-    left_wrist = landmarks[15]
+        angle = math.acos(dot_product / (mag_ba * mag_bc))
+        return math.degrees(angle)
+    except:
+        return 0
 
-    # 🪵 Plank: Hip angle (shoulder-hip-ankle)
-    shoulder = landmarks[11]
-    hip = landmarks[23]
-    ankle = landmarks[27]
+# ------------------ VISUALIZATION FUNCTIONS ------------------
+def draw_angle(frame, landmarks, p1, p2, p3, label):
+    h, w = frame.shape[:2]
+    try:
+        x1, y1 = int(landmarks[p1].x * w), int(landmarks[p1].y * h)
+        x2, y2 = int(landmarks[p2].x * w), int(landmarks[p2].y * h)
+        x3, y3 = int(landmarks[p3].x * w), int(landmarks[p3].y * h)
 
-    # --- Helper: Draw lines and dots
-    def draw_line(pt1, pt2, color=(255, 255, 255), thickness=2):
-        x1, y1 = int(pt1.x * image.shape[1]), int(pt1.y * image.shape[0])
-        x2, y2 = int(pt2.x * image.shape[1]), int(pt2.y * image.shape[0])
-        cv2.line(image, (x1, y1), (x2, y2), color, thickness)
+        angle = int(calculate_angle(landmarks[p1], landmarks[p2], landmarks[p3]))
 
-    def draw_circle(pt, color=(255, 255, 255), radius=6):
-        x, y = int(pt.x * image.shape[1]), int(pt.y * image.shape[0])
-        cv2.circle(image, (x, y), radius, color, -1)
+        # Draw lines and points
+        cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 4)
+        cv2.line(frame, (x2, y2), (x3, y3), (0, 255, 255), 4)
+        cv2.circle(frame, (x1, y1), 6, (0, 0, 255), -1)
+        cv2.circle(frame, (x2, y2), 6, (0, 0, 255), -1)
+        cv2.circle(frame, (x3, y3), 6, (0, 0, 255), -1)
 
-    # --- Helper: Angle calculation
-    def calculate_angle(a, b, c):
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        c = np.array([c.x, c.y])
+        # Label angle
+        cv2.putText(frame, f"{label}: {angle}°", (x2 + 10, y2 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    except:
+        pass
+    return frame
 
-        ba = a - b
-        bc = c - b
 
-        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        angle = np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
-        return int(angle)
+def visualize_angles(frame, landmarks, exercise):
+    if exercise.lower() == "squats":
+        # Right and Left Knee
+        draw_angle(frame, landmarks, 24, 26, 28, "Right Knee")
+        draw_angle(frame, landmarks, 23, 25, 27, "Left Knee")
+    elif exercise.lower() == "pushups":
+        # Right and Left Elbow
+        draw_angle(frame, landmarks, 12, 14, 16, "Right Elbow")
+        draw_angle(frame, landmarks, 11, 13, 15, "Left Elbow")
+    elif exercise.lower() == "planks":
+        # Shoulder-hip-knee angles to monitor straight body
+        draw_angle(frame, landmarks, 12, 24, 26, "Right Side")
+        draw_angle(frame, landmarks, 11, 23, 25, "Left Side")
+    return frame
 
-    # --- Draw Pose Lines and Angles
-    feedback_color = COLORS.get(state, COLORS["default"])
+# ------------------ LANDMARK DRAWING ------------------
+def draw_landmarks(landmarks, frame, feedback_text=None, rep_count=None):
+    if landmarks:
+        mp_drawing.draw_landmarks(
+            frame,
+            landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4),
+            connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=3, circle_radius=2),
+        )
 
-    # Squat knee angle
-    knee_angle = calculate_angle(left_hip, left_knee, left_ankle)
-    angle_history["knee"].append(knee_angle)
-    smoothed_knee = int(np.mean(angle_history["knee"]))
+    # Feedback and Reps
+    if feedback_text:
+        cv2.putText(frame, feedback_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+    if rep_count is not None:
+        cv2.putText(frame, f"Reps: {rep_count}", (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-    draw_line(left_hip, left_knee, feedback_color)
-    draw_line(left_knee, left_ankle, feedback_color)
-    draw_circle(left_knee, feedback_color)
-
-    if show_angles:
-        cv2.putText(image, f'Knee: {smoothed_knee}°', 
-                    (int(left_knee.x * image.shape[1]) - 50, int(left_knee.y * image.shape[0]) - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
-
-    # Push-up elbow angle
-    elbow_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
-    angle_history["elbow"].append(elbow_angle)
-    smoothed_elbow = int(np.mean(angle_history["elbow"]))
-
-    draw_line(left_shoulder, left_elbow, feedback_color)
-    draw_line(left_elbow, left_wrist, feedback_color)
-    draw_circle(left_elbow, feedback_color)
-
-    if show_angles:
-        cv2.putText(image, f'Elbow: {smoothed_elbow}°',
-                    (int(left_elbow.x * image.shape[1]) - 50, int(left_elbow.y * image.shape[0]) - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
-
-    # Plank hip angle
-    hip_angle = calculate_angle(shoulder, hip, ankle)
-    angle_history["hip"].append(hip_angle)
-    smoothed_hip = int(np.mean(angle_history["hip"]))
-
-    draw_line(shoulder, hip, feedback_color)
-    draw_line(hip, ankle, feedback_color)
-    draw_circle(hip, feedback_color)
-
-    if show_angles:
-        cv2.putText(image, f'Hip: {smoothed_hip}°',
-                    (int(hip.x * image.shape[1]) - 50, int(hip.y * image.shape[0]) - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 2)
-
-    return image
+    return frame

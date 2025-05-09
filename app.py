@@ -1,154 +1,99 @@
 import streamlit as st
 import cv2
-import tempfile
-import mediapipe as mp
-from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from utils.timer_utils import PlankTimer
+from pose_estimation.detect_pose import get_pose_model, detect_pose
+from pose_estimation.draw_landmarks import draw_landmarks, visualize_angles
 from posture_analysis.evaluate_posture import evaluate_posture
-from pose_estimation.draw_landmarks import draw_landmarks
-from utils.text_to_speech import audio_feedback  # Ensure you import audio_feedback
+from utils.text_to_speech import audio_feedback, intro_voice
 
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+# Page Config
+st.set_page_config(page_title="🏋️ Real-Time Exercise Feedback", layout="wide")
 
-# Set the Streamlit page configuration
-st.set_page_config(page_title="Fitness Feedback App", layout="wide")
+# Session state setup
+if "intro_spoken" not in st.session_state:
+    st.session_state.intro_spoken = False
 
-EXERCISE_OPTIONS = ["Squat", "Pushup", "Plank"]
+# --- SIDEBAR NAVIGATION ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913466.png", width=100)
+    st.title("Fitness AI Trainer")
+    st.markdown("---")
+    page = st.radio("📌 Navigate", ["Home", "Live Mode", "Upload Mode"])
 
-# Initialize analyzers once using session state
-if "squat_tracker" not in st.session_state:
-    st.session_state.squat_tracker = SquatAnalyzer()
-
-if "pushup_tracker" not in st.session_state:
-    st.session_state.pushup_tracker = PushupAnalyzer()
-
-if "plank_timer" not in st.session_state:
-    st.session_state.plank_timer = PlankTimer()
-
-def main():
-    st.title("🏋️ AI Fitness Feedback System")
-    st.sidebar.title("Exercise Selection")
-    app_mode = st.sidebar.radio("Navigation", ["Start Page", "Live Camera", "Upload Video"])
-
-    if app_mode == "Start Page":
-        show_start_page()
-    elif app_mode == "Live Camera":
-        show_live_camera()
-    elif app_mode == "Upload Video":
-        show_upload_video()
-
-def show_start_page():
+# --- HOME PAGE ---
+if page == "Home":
     st.markdown("""
-    ### 🤖 Real-Time Fitness Feedback App
-    This app helps you perform exercises like **Squats**, **Pushups**, and **Planks** with instant feedback using your webcam or uploaded video.
+        <h2>👋 Welcome to the AI Fitness Trainer App</h2>
+        <p>This app gives you real-time feedback for <b>Squats</b>, <b>Push-ups</b>, and <b>Planks</b>.</p>
+        <div style='padding:10px;border-radius:10px;'>
+            <ul>
+                <li>📹 <b>Live Mode:</b> Use your webcam for real-time form correction</li>
+                <li>📁 <b>Upload Mode:</b> Analyze your recorded workout video</li>
+                <li>🎯 <b>Posture Feedback, Rep Counting, and Angle Visualizations</b></li>
+            </ul>
+        </div>
+        <h4>✅ Pro Tips:</h4>
+        <ul>
+            <li>Keep your full body visible to the camera</li>
+            <li>Use good lighting and avoid cluttered backgrounds</li>
+            <li>Follow on-screen feedback to correct your form</li>
+        </ul>
+    """, unsafe_allow_html=True)
 
-    ✅ Get feedback on your posture
-
-    Made with ❤️ and ☕ using OpenCV and Mediapipe.
-    """)
-
-def show_live_camera():
-    st.header("📷 Live Camera Mode")
-    exercise = st.selectbox("Select Exercise", EXERCISE_OPTIONS)
-    start_button = st.button("Start")
+# --- LIVE MODE ---
+elif page == "Live Mode":
+    st.header("📹 Live Mode: Real-Time Exercise Feedback")
+    exercise = st.selectbox("🏋️ Select Exercise:", ["Squats", "Pushups", "Planks"], key="live_exercise")
+    start_button = st.button("▶️ Start Live Session")
+    FRAME_WINDOW = st.image([])
 
     if start_button:
-        run_live_feedback(exercise)
-
-def run_live_feedback(exercise):
-    cap = cv2.VideoCapture(0)
-    pose = mp_pose.Pose()
-
-    # Map UI exercise name to expected lowercase keys
-    exercise_map = {
-        "Squat": "squats",
-        "Pushup": "pushups",
-        "Plank": "planks"
-    }
-    exercise_key = exercise_map.get(exercise.lower().capitalize(), "unknown")
-
-    stframe = st.empty()
-    stop = st.button("Stop")
-
-    while cap.isOpened() and not stop:
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("Camera not detected!")
-            break
-
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgb)
-
-        if results.pose_landmarks:
-            if exercise_key == "planks":
-                duration, _, feedback = evaluate_posture(
-                    results.pose_landmarks.landmark, frame.shape[1], frame.shape[0], exercise_key
-                )
-                rep_count = "-"
-            else:
-                correct, incorrect, feedback = evaluate_posture(
-                    results.pose_landmarks.landmark, frame.shape[1], frame.shape[0], exercise_key
-                )
-                rep_count = correct
-
-            audio_feedback(feedback)
-            frame = draw_landmarks(results.pose_landmarks, frame, feedback_text=feedback, rep_count=rep_count)
-
-        stframe.image(frame, channels="BGR")
-
-    cap.release()
-    st.success("Session Ended")
-
-def show_upload_video():
-    st.header("🎞️ Upload Mode")
-    exercise = st.selectbox("Choose Exercise", EXERCISE_OPTIONS)
-    uploaded_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi"])
-
-    if uploaded_file is not None:
-        exercise_map = {
-            "Squat": "squats",
-            "Pushup": "pushups",
-            "Plank": "planks"
-        }
-        exercise_key = exercise_map.get(exercise.lower().capitalize(), "unknown")
-
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(uploaded_file.read())
-        cap = cv2.VideoCapture(tfile.name)
-        pose = mp_pose.Pose()
-
-        stframe = st.empty()
+        cap = cv2.VideoCapture(0)
+        pose_model = get_pose_model()
+        intro_voice()  # 🔊 Welcome voice
+        st.info("📸 Camera started. Click the Stop button to end the session.")
+        stop_button = st.button("⛔ Stop")
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
+                st.error("❌ Failed to capture frame.")
                 break
 
-            frame = cv2.resize(frame, (640, 480))
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(rgb)
+            landmarks, results = detect_pose(frame, pose_model)
+            if landmarks:
+                correct, incorrect, feedback, posture = evaluate_posture(
+                    landmarks, frame.shape[1], frame.shape[0], exercise
+                )
 
-            if results.pose_landmarks:
-                if exercise_key == "planks":
-                    duration, _, feedback = evaluate_posture(
-                        results.pose_landmarks.landmark, frame.shape[1], frame.shape[0], exercise_key
-                    )
-                    rep_count = "-"
-                else:
-                    correct, incorrect, feedback = evaluate_posture(
-                        results.pose_landmarks.landmark, frame.shape[1], frame.shape[0], exercise_key
-                    )
-                    rep_count = correct
+                frame = visualize_angles(frame, landmarks, exercise)
+                frame = draw_landmarks(results.pose_landmarks, frame, feedback_text=feedback, rep_count=correct)
 
-                audio_feedback(feedback)
-                frame = draw_landmarks(results.pose_landmarks, frame, feedback_text=feedback, rep_count=rep_count)
+                # 🔊 Smart Voice Feedback
+                audio_feedback(feedback, posture, landmarks)
 
-            stframe.image(frame, channels="BGR")
+            else:
+                cv2.putText(frame, "⚠️ Unable to detect pose.", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            FRAME_WINDOW.image(frame)
+
+            if stop_button:
+                break
 
         cap.release()
-        st.success("Video analysis complete!")
+        st.success("✅ Session Ended.")
 
-if __name__ == "__main__":
-    main()
+# --- UPLOAD MODE ---
+elif page == "Upload Mode":
+    st.header("📁 Upload Exercise Video")
+    exercise = st.selectbox("🏋️ Select Exercise:", ["Squats", "Pushups", "Planks"], key="upload_exercise")
+    uploaded_video = st.file_uploader("📤 Upload a video file", type=["mp4", "mov", "avi"])
+
+    if uploaded_video is not None:
+        st.video(uploaded_video)
+        st.warning("🚧 Video analysis coming soon!")
+
+# --- FOOTER ---
+st.markdown("---")
+st.caption("🚀 Made with ❤️ and ☕ by Aruba & Zainab")
