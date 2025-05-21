@@ -32,17 +32,18 @@ class PlankTimer:
         self.is_timing = False
         self.total_duration = 0
 
+
 class PlankAnalyzer:
     def __init__(self):
         self.timer = PlankTimer()
 
-    def update(self, landmarks):
+    def update(self, landmarks, width, height):
         try:
-            left_shoulder = landmarks[11]
-            left_hip = landmarks[23]
-            left_ankle = landmarks[27]
+            shoulder = (int(landmarks[11].x * width), int(landmarks[11].y * height))
+            hip = (int(landmarks[23].x * width), int(landmarks[23].y * height))
+            ankle = (int(landmarks[27].x * width), int(landmarks[27].y * height))
 
-            angle = calculate_angle(left_shoulder, left_hip, left_ankle)
+            angle = calculate_angle(shoulder, hip, ankle)
             duration, is_good = self.timer.update(angle)
 
             if angle is None:

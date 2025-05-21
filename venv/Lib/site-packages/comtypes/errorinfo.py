@@ -1,9 +1,14 @@
 import sys
-from ctypes import *
+from ctypes import POINTER, OleDLL, byref, c_wchar_p
 from ctypes.wintypes import DWORD, ULONG
+from typing import TYPE_CHECKING, Optional
+from typing import Union as _UnionT
 
 from comtypes import BSTR, COMMETHOD, GUID, HRESULT, IUnknown
-from comtypes.hresult import *
+from comtypes.hresult import DISP_E_EXCEPTION, S_OK
+
+if TYPE_CHECKING:
+    from comtypes import hints  # type: ignore
 
 LPCOLESTR = c_wchar_p
 
@@ -17,6 +22,13 @@ class ICreateErrorInfo(IUnknown):
         COMMETHOD([], HRESULT, "SetHelpFile", (["in"], LPCOLESTR, "szHelpFile")),
         COMMETHOD([], HRESULT, "SetHelpContext", (["in"], DWORD, "dwHelpContext")),
     ]
+    if TYPE_CHECKING:
+
+        def SetGUID(self, rguid: GUID) -> hints.Hresult: ...
+        def SetSource(self, szSource: str) -> hints.Hresult: ...
+        def SetDescription(self, szDescription: str) -> hints.Hresult: ...
+        def SetHelpFile(self, szHelpFile: str) -> hints.Hresult: ...
+        def SetHelpContext(self, dwHelpContext: int) -> hints.Hresult: ...
 
 
 class IErrorInfo(IUnknown):
@@ -34,6 +46,13 @@ class IErrorInfo(IUnknown):
             [], HRESULT, "GetHelpContext", (["out"], POINTER(DWORD), "pdwHelpContext")
         ),
     ]
+    if TYPE_CHECKING:
+
+        def GetGUID(self) -> GUID: ...
+        def GetSource(self) -> str: ...
+        def GetDescription(self) -> str: ...
+        def GetHelpFile(self) -> str: ...
+        def GetHelpContext(self) -> int: ...
 
 
 class ISupportErrorInfo(IUnknown):
@@ -43,6 +62,9 @@ class ISupportErrorInfo(IUnknown):
             [], HRESULT, "InterfaceSupportsErrorInfo", (["in"], POINTER(GUID), "riid")
         )
     ]
+    if TYPE_CHECKING:
+
+        def InterfaceSupportsErrorInfo(self, riid: GUID) -> hints.Hresult: ...
 
 
 ################################################################
@@ -61,28 +83,36 @@ _SetErrorInfo.argtypes = [ULONG, POINTER(IErrorInfo)]
 _SetErrorInfo.restype = HRESULT
 
 
-def CreateErrorInfo():
+def CreateErrorInfo() -> ICreateErrorInfo:
+    """Creates an instance of a generic error object."""
     cei = POINTER(ICreateErrorInfo)()
     _CreateErrorInfo(byref(cei))
-    return cei
+    return cei  # type: ignore
 
 
-def GetErrorInfo():
+def GetErrorInfo() -> Optional[IErrorInfo]:
     """Get the error information for the current thread."""
     errinfo = POINTER(IErrorInfo)()
     if S_OK == _GetErrorInfo(0, byref(errinfo)):
-        return errinfo
+        return errinfo  # type: ignore
     return None
 
 
-def SetErrorInfo(errinfo):
+def SetErrorInfo(errinfo: _UnionT[IErrorInfo, ICreateErrorInfo]) -> "hints.Hresult":
     """Set error information for the current thread."""
+    # ICreateErrorInfo can QueryInterface with IErrorInfo, so both types are
+    # accepted, thanks to the magic of from_param.
     return _SetErrorInfo(0, errinfo)
 
 
 def ReportError(
-    text, iid, clsid=None, helpfile=None, helpcontext=0, hresult=DISP_E_EXCEPTION
-):
+    text: str,
+    iid: GUID,
+    clsid: _UnionT[None, str, GUID] = None,
+    helpfile: Optional[str] = None,
+    helpcontext: Optional[int] = 0,
+    hresult: int = DISP_E_EXCEPTION,
+) -> int:
     """Report a COM error.  Returns the passed in hresult value."""
     ei = CreateErrorInfo()
     ei.SetDescription(text)
@@ -99,21 +129,29 @@ def ReportError(
         except WindowsError:
             pass
         else:
-            ei.SetSource(
-                progid
-            )  # progid for the class or application that created the error
-    _SetErrorInfo(0, ei)
+            # progid for the class or application that created the error
+            ei.SetSource(progid)
+    SetErrorInfo(ei)
     return hresult
 
 
 def ReportException(
-    hresult, iid, clsid=None, helpfile=None, helpcontext=None, stacklevel=None
-):
+    hresult: int,
+    iid: GUID,
+    clsid: _UnionT[None, str, GUID] = None,
+    helpfile: Optional[str] = None,
+    helpcontext: Optional[int] = None,
+    stacklevel: Optional[int] = None,
+) -> int:
     """Report a COM exception.  Returns the passed in hresult value."""
     typ, value, tb = sys.exc_info()
     if stacklevel is not None:
         for _ in range(stacklevel):
+            if tb is None:
+                raise ValueError("'stacklevel' exceeds the available depth.")
             tb = tb.tb_next
+        if tb is None:
+            raise ValueError("'stacklevel' is specified, but no error information.")
         line = tb.tb_frame.f_lineno
         name = tb.tb_frame.f_globals["__name__"]
         text = f"{typ}: {value} ({name}, line {line:d})"

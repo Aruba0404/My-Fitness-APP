@@ -1,5 +1,6 @@
 import ctypes
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -8,33 +9,51 @@ from typing import (
     Literal,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
     Type,
 )
 from typing import Union as _UnionT
 
 import comtypes
-from comtypes import _CData
 
-_PositionalParamFlagType = Tuple[int, Optional[str]]
-_OptionalParamFlagType = Tuple[int, Optional[str], Any]
-_ParamFlagType = _UnionT[_PositionalParamFlagType, _OptionalParamFlagType]
-_PositionalArgSpecElmType = Tuple[List[str], Type[_CData], str]
-_OptionalArgSpecElmType = Tuple[List[str], Type[_CData], str, Any]
-_ArgSpecElmType = _UnionT[_PositionalArgSpecElmType, _OptionalArgSpecElmType]
+if TYPE_CHECKING:
+    from _ctypes import _PyCSimpleType
+    from ctypes import _CArgObject, _CDataType
 
+    from comtypes import hints  # type: ignore
+else:
+    _PyCSimpleType = type(ctypes.c_int)
+    _CArgObject = type(ctypes.byref(ctypes.c_int()))
+
+
+DISPATCH_METHOD = 1
+DISPATCH_PROPERTYGET = 2
+DISPATCH_PROPERTYPUT = 4
+DISPATCH_PROPERTYPUTREF = 8
+
+PARAMFLAG_NONE = 0
+PARAMFLAG_FIN = 1
+PARAMFLAG_FOUT = 2
+PARAMFLAG_FLCID = 4
+PARAMFLAG_FRETVAL = 8
+PARAMFLAG_FOPT = 16
+PARAMFLAG_FHASDEFAULT = 32
+PARAMFLAG_FHASCUSTDATA = 64
 
 _PARAMFLAGS = {
-    "in": 1,
-    "out": 2,
-    "lcid": 4,
-    "retval": 8,
-    "optional": 16,
+    "in": PARAMFLAG_FIN,
+    "out": PARAMFLAG_FOUT,
+    "lcid": PARAMFLAG_FLCID,
+    "retval": PARAMFLAG_FRETVAL,
+    "optional": PARAMFLAG_FOPT,
 }
 
 
-def _encode_idl(names):
-    # sum up all values found in _PARAMFLAGS, ignoring all others.
+def _encode_idl(names: Sequence[str]) -> int:
+    """Sums up 'in', 'out', 'lcid', 'retval' and 'optional' values
+    found in _PARAMFLAGS, ignoring all other PARAMFLAG_... stuff.
+    """
     return sum([_PARAMFLAGS.get(n, 0) for n in names])
 
 
@@ -43,20 +62,20 @@ _NOTHING = object()
 
 def _unpack_argspec(
     idl: List[str],
-    typ: Type[_CData],
+    typ: Type["_CDataType"],
     name: Optional[str] = None,
     defval: Any = _NOTHING,
-) -> Tuple[List[str], Type[_CData], Optional[str], Any]:
+) -> Tuple[List[str], Type["_CDataType"], Optional[str], Any]:
     return idl, typ, name, defval
 
 
 def _resolve_argspec(
-    items: Tuple[_ArgSpecElmType, ...],
-) -> Tuple[Tuple[_ParamFlagType, ...], Tuple[Type[_CData], ...]]:
+    items: Tuple["hints.ArgSpecElmType", ...],
+) -> Tuple[Tuple["hints.ParamFlagType", ...], Tuple[Type["_CDataType"], ...]]:
     """Unpacks and converts from argspec to paramflags and argtypes.
 
     - paramflags is a sequence of `(pflags: int, argname: str, | None[, defval: Any])`.
-    - argtypes is a sequence of `type[_CData]`.
+    - argtypes is a sequence of `type[_CDataType]`.
     """
     from comtypes.automation import VARIANT
 
@@ -83,14 +102,23 @@ def _resolve_argspec(
     return tuple(paramflags), tuple(argtypes)
 
 
+if TYPE_CHECKING:
+    _VarFlags = Tuple[str, ...]
+    _VarFlagsWithDispIdHelpstr = Tuple["dispid", "helpstring", hints.Unpack[_VarFlags]]
+    _VarFlagsWithDispId = Tuple["dispid", hints.Unpack[_VarFlags]]
+    _VarFlagsWithHelpstr = Tuple["helpstring", hints.Unpack[_VarFlags]]
+    _DispIdlFlags = _UnionT[_VarFlagsWithDispIdHelpstr, _VarFlagsWithDispId]
+    _ComIdlFlags = _UnionT[_VarFlags, _VarFlagsWithHelpstr]
+
+
 class _ComMemberSpec(NamedTuple):
     """Specifier for a slot of COM method or property."""
 
-    restype: Optional[Type[_CData]]
+    restype: Optional[Type["_CDataType"]]
     name: str
-    argtypes: Tuple[Type[_CData], ...]
-    paramflags: Optional[Tuple[_ParamFlagType, ...]]
-    idlflags: Tuple[_UnionT[str, int], ...]
+    argtypes: Tuple[Type["_CDataType"], ...]
+    paramflags: Optional[Tuple["hints.ParamFlagType", ...]]
+    idlflags: _UnionT["_ComIdlFlags", "_DispIdlFlags"]
     doc: Optional[str]
 
     def is_prop(self) -> bool:
@@ -102,9 +130,9 @@ class _DispMemberSpec(NamedTuple):
 
     what: Literal["DISPMETHOD", "DISPPROPERTY"]
     name: str
-    idlflags: Tuple[_UnionT[str, int], ...]
-    restype: Optional[Type[_CData]]
-    argspec: Tuple[_ArgSpecElmType, ...]
+    idlflags: "_DispIdlFlags"
+    restype: Optional[Type["_CDataType"]]
+    argspec: Tuple["hints.ArgSpecElmType", ...]
 
     @property
     def memid(self) -> int:
@@ -197,15 +225,32 @@ def COMMETHOD(idlflags, restype, methodname, *argspec) -> _ComMemberSpec:
 
 
 ################################################################
+# workarounds for ctypes functions and parameters
 
-_PropFunc = Optional[Callable[..., Any]]
-_DocType = Optional[str]
+
+def _prepare_parameter(value: Any, atyp: Type["_CDataType"]) -> "_CDataType":
+    # parameter was passed, call `from_param()` to
+    # convert it to a `ctypes` type.
+    if getattr(value, "_type_", None) is atyp:
+        # Array of or pointer to type `atyp` was passed,
+        # pointer to `atyp` expected.
+        v = value
+    elif type(atyp) is _PyCSimpleType:  # type: ignore
+        # The `from_param` method of simple types
+        # (`c_int`, `c_double`, ...) returns a `byref` object which
+        # we cannot use since later it will be wrapped in a pointer.
+        # Simply call the constructor with the argument in that case.
+        v = atyp(value)
+    else:
+        v = atyp.from_param(value)
+        assert not isinstance(v, _CArgObject)  # type: ignore
+    return v
 
 
 def _fix_inout_args(
     func: Callable[..., Any],
-    argtypes: Tuple[Type[_CData], ...],
-    paramflags: Tuple[_ParamFlagType, ...],
+    argtypes: Tuple[Type["_CDataType"], ...],
+    paramflags: Tuple["hints.ParamFlagType", ...],
 ) -> Callable[..., Any]:
     """This function provides a workaround for a bug in `ctypes`.
 
@@ -217,13 +262,11 @@ def _fix_inout_args(
     #
     # TODO: The workaround should be disabled when a ctypes
     # version is used where the bug is fixed.
-    SIMPLETYPE = type(ctypes.c_int)
-    BYREFTYPE = type(ctypes.byref(ctypes.c_int()))
 
     def call_with_inout(self, *args, **kw):
         args = list(args)
         # Indexed by order in the output
-        outargs: Dict[int, _UnionT[_CData, "ctypes._CArgObject"]] = {}
+        outargs: Dict[int, "_CDataType"] = {}
         outnum = 0
         param_index = 0
         # Go through all expected arguments and match them to the provided arguments.
@@ -231,8 +274,8 @@ def _fix_inout_args(
         # through the keyword arguments.
         for i, info in enumerate(paramflags):
             direction = info[0]
-            dir_in = direction & 1 == 1
-            dir_out = direction & 2 == 2
+            dir_in = bool(direction & PARAMFLAG_FIN)
+            dir_out = bool(direction & PARAMFLAG_FOUT)
             is_positional = param_index < len(args)
             if not (dir_in or dir_out):
                 # The original code here did not check for this special case and
@@ -249,34 +292,16 @@ def _fix_inout_args(
                 name = info[1]
                 # [in, out] parameters are passed as pointers,
                 # this is the pointed-to type:
-                atyp: Type[_CData] = getattr(argtypes[i], "_type_")
+                atyp: Type["_CDataType"] = getattr(argtypes[i], "_type_")
 
                 # Get the actual parameter, either as positional or
                 # keyword arg.
 
-                def prepare_parameter(v):
-                    # parameter was passed, call `from_param()` to
-                    # convert it to a `ctypes` type.
-                    if getattr(v, "_type_", None) is atyp:
-                        # Array of or pointer to type `atyp` was passed,
-                        # pointer to `atyp` expected.
-                        pass
-                    elif type(atyp) is SIMPLETYPE:
-                        # The `from_param` method of simple types
-                        # (`c_int`, `c_double`, ...) returns a `byref` object which
-                        # we cannot use since later it will be wrapped in a pointer.
-                        # Simply call the constructor with the argument in that case.
-                        v = atyp(v)
-                    else:
-                        v = atyp.from_param(v)
-                        assert not isinstance(v, BYREFTYPE)
-                    return v
-
                 if is_positional:
-                    v = prepare_parameter(args[param_index])
+                    v = _prepare_parameter(args[param_index], atyp)
                     args[param_index] = v
                 elif name in kw:
-                    v = prepare_parameter(kw[name])
+                    v = _prepare_parameter(kw[name], atyp)
                     kw[name] = v
                 else:
                     # no parameter was passed, make an empty one of the required type
@@ -319,6 +344,13 @@ def _fix_inout_args(
         return rescode
 
     return call_with_inout
+
+
+################################################################
+
+
+_PropFunc = Optional[Callable[..., Any]]
+_DocType = Optional[str]
 
 
 class PropertyMapping(object):
@@ -472,8 +504,8 @@ class ComMemberGenerator(object):
     ) -> Callable[..., Any]:
         """This is a workaround. See `_fix_inout_args` docstring and comments."""
         if m.paramflags:
-            dirflags = [(p[0] & 3) for p in m.paramflags]
-            if 3 in dirflags:
+            dirflags = [(p[0] & (PARAMFLAG_FIN | PARAMFLAG_FOUT)) for p in m.paramflags]
+            if (PARAMFLAG_FIN | PARAMFLAG_FOUT) in dirflags:
                 return _fix_inout_args(func, m.argtypes, m.paramflags)
         return func
 
@@ -510,15 +542,15 @@ class DispMemberGenerator(object):
         memid = m.memid
 
         def fget(obj):
-            return obj.Invoke(memid, _invkind=2)  # DISPATCH_PROPERTYGET
+            return obj.Invoke(memid, _invkind=DISPATCH_PROPERTYGET)
 
         if "readonly" in m.idlflags:
             return property(fget)
 
         def fset(obj, value):
-            # Detect whether to use DISPATCH_PROPERTYPUT or
-            # DISPATCH_PROPERTYPUTREF
-            invkind = 8 if comtypes._is_object(value) else 4
+            # Detect whether to use PUT or PUTREF
+            is_ref = comtypes._is_object(value)
+            invkind = DISPATCH_PROPERTYPUTREF if is_ref else DISPATCH_PROPERTYPUT
             return obj.Invoke(memid, value, _invkind=invkind)
 
         return property(fget, fset)
@@ -529,25 +561,19 @@ class DispMemberGenerator(object):
         if "propget" in m.idlflags:
 
             def getfunc(obj, *args, **kw):
-                return obj.Invoke(
-                    memid, _invkind=2, *args, **kw
-                )  # DISPATCH_PROPERTYGET
+                return obj.Invoke(memid, _invkind=DISPATCH_PROPERTYGET, *args, **kw)
 
             return getfunc
         elif "propput" in m.idlflags:
 
             def putfunc(obj, *args, **kw):
-                return obj.Invoke(
-                    memid, _invkind=4, *args, **kw
-                )  # DISPATCH_PROPERTYPUT
+                return obj.Invoke(memid, _invkind=DISPATCH_PROPERTYPUT, *args, **kw)
 
             return putfunc
         elif "propputref" in m.idlflags:
 
             def putreffunc(obj, *args, **kw):
-                return obj.Invoke(
-                    memid, _invkind=8, *args, **kw
-                )  # DISPATCH_PROPERTYPUTREF
+                return obj.Invoke(memid, _invkind=DISPATCH_PROPERTYPUTREF, *args, **kw)
 
             return putreffunc
         # a first attempt to make use of the restype.  Still, support for
@@ -556,7 +582,7 @@ class DispMemberGenerator(object):
             interface = m.restype.__com_interface__  # type: ignore
 
             def comitffunc(obj, *args, **kw):
-                result = obj.Invoke(memid, _invkind=1, *args, **kw)
+                result = obj.Invoke(memid, _invkind=DISPATCH_METHOD, *args, **kw)
                 if result is None:
                     return
                 return result.QueryInterface(interface)
@@ -564,7 +590,7 @@ class DispMemberGenerator(object):
             return comitffunc
 
         def func(obj, *args, **kw):
-            return obj.Invoke(memid, _invkind=1, *args, **kw)  # DISPATCH_METHOD
+            return obj.Invoke(memid, _invkind=DISPATCH_METHOD, *args, **kw)
 
         return func
 

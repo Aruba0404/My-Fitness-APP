@@ -2,7 +2,7 @@ import numpy as np
 
 def calculate_angle(a, b, c):
     """
-    Calculate the 3D angle between three Mediapipe landmarks: a, b, and c.
+    Calculate the 3D angle between Mediapipe landmarks a, b, and c.
     Returns the angle in degrees (0° to 180°).
     """
     try:
@@ -14,7 +14,7 @@ def calculate_angle(a, b, c):
         bc = c - b
 
         cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)  # prevent NaNs
+        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)  # numerical safety
 
         angle = np.degrees(np.arccos(cosine_angle))
         return angle

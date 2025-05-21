@@ -1,7 +1,8 @@
 import ctypes
 import logging
 import traceback
-from ctypes import HRESULT, POINTER, WINFUNCTYPE, OleDLL, Structure, WinDLL
+from _ctypes import COMError
+from ctypes import HRESULT, POINTER, WINFUNCTYPE, OleDLL, Structure, WinDLL, byref
 from ctypes.wintypes import (
     BOOL,
     DWORD,
@@ -12,13 +13,16 @@ from ctypes.wintypes import (
     LPVOID,
     ULONG,
 )
+from typing import Any, Callable, Optional, Type
+from typing import Union as _UnionT
 
 import comtypes
-import comtypes.automation
-import comtypes.connectionpoints
-import comtypes.hresult
-import comtypes.typeinfo
+from comtypes import COMObject, IUnknown, hresult
+from comtypes._comobject import _MethodFinder
+from comtypes.automation import DISPATCH_METHOD, IDispatch
 from comtypes.client._generate import GetModule
+from comtypes.connectionpoints import IConnectionPoint, IConnectionPointContainer
+from comtypes.typeinfo import GUIDKIND_DEFAULT_SOURCE_DISP_IID, IProvideClassInfo2
 
 logger = logging.getLogger(__name__)
 
@@ -57,46 +61,62 @@ _CloseHandle = _kernel32.CloseHandle
 _CloseHandle.argtypes = [HANDLE]
 _CloseHandle.restype = BOOL
 
+_ReceiverType = _UnionT[COMObject, IUnknown]
+
 
 class _AdviseConnection(object):
-    def __init__(self, source, interface, receiver):
+    cp: Optional[IConnectionPoint]
+    cookie: Optional[int]
+    receiver: Optional[_ReceiverType]
+
+    def __init__(
+        self, source: IUnknown, interface: Type[IUnknown], receiver: _ReceiverType
+    ) -> None:
+        # Pre-initializing attributes to avoid AttributeError after failed connection.
         self.cp = None
         self.cookie = None
         self.receiver = None
         self._connect(source, interface, receiver)
 
-    def _connect(self, source, interface, receiver):
-        cpc = source.QueryInterface(comtypes.connectionpoints.IConnectionPointContainer)
-        self.cp = cpc.FindConnectionPoint(ctypes.byref(interface._iid_))
+    def _connect(
+        self, source: IUnknown, interface: Type[IUnknown], receiver: _ReceiverType
+    ) -> None:
+        cpc = source.QueryInterface(IConnectionPointContainer)
+        self.cp = cpc.FindConnectionPoint(byref(interface._iid_))
         logger.debug("Start advise %s", interface)
-        self.cookie = self.cp.Advise(receiver)
+        # Since `POINTER(IUnknown).from_param`(`_compointer_base.from_param`)
+        # can accept a `COMObject` instance, `IConnectionPoint.Advise` can
+        # take either a COM object or a COM interface pointer.
+        self.cookie = self.cp.Advise(receiver)  # type: ignore
         self.receiver = receiver
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         if self.cookie:
+            assert self.cp is not None
             self.cp.Unadvise(self.cookie)
             logger.debug("Unadvised %s", self.cp)
             self.cp = None
             self.cookie = None
             del self.receiver
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             if self.cookie is not None:
+                assert self.cp is not None
                 self.cp.Unadvise(self.cookie)
-        except (comtypes.COMError, WindowsError):
+        except (COMError, WindowsError):
             # Are we sure we want to ignore errors here?
             pass
 
 
-def FindOutgoingInterface(source):
+def FindOutgoingInterface(source: IUnknown) -> Type[IUnknown]:
     """XXX Describe the strategy that is used..."""
     # If the COM object implements IProvideClassInfo2, it is easy to
     # find the default outgoing interface.
     try:
-        pci = source.QueryInterface(comtypes.typeinfo.IProvideClassInfo2)
-        guid = pci.GetGUID(1)
-    except comtypes.COMError:
+        pci = source.QueryInterface(IProvideClassInfo2)
+        guid = pci.GetGUID(GUIDKIND_DEFAULT_SOURCE_DISP_IID)
+    except COMError:
         pass
     else:
         # another try: block needed?
@@ -115,7 +135,7 @@ def FindOutgoingInterface(source):
     # comtypes.client):
     clsid = source.__dict__.get("__clsid")
     try:
-        interface = comtypes.com_coclass_registry[clsid]._outgoing_interfaces_[0]
+        interface = comtypes.com_coclass_registry[clsid]._outgoing_interfaces_[0]  # type: ignore
     except KeyError:
         pass
     else:
@@ -133,7 +153,7 @@ def find_single_connection_interface(source):
     # Enumerate the connection interfaces.  If we find a single one,
     # return it, if there are more, we give up since we cannot
     # determine which one to use.
-    cpc = source.QueryInterface(comtypes.connectionpoints.IConnectionPointContainer)
+    cpc = source.QueryInterface(IConnectionPointContainer)
     enum = cpc.EnumConnectionPoints()
     iid = enum.next().GetConnectionInterface()
     try:
@@ -152,32 +172,33 @@ def find_single_connection_interface(source):
     return None
 
 
-def report_errors(func):
+def report_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     # This decorator preserves parts of the decorated function
     # signature, so that the comtypes special-casing for the 'this'
     # parameter still works.
     if func.__code__.co_varnames[:2] == ("self", "this"):
 
-        def error_printer(self, this, *args, **kw):
+        def with_this(self, this, *args, **kw):
             try:
                 return func(self, this, *args, **kw)
             except:
                 traceback.print_exc()
                 raise
 
+        error_printer = with_this
+
     else:
 
-        def error_printer(*args, **kw):
+        def without_this(*args, **kw):
             try:
                 return func(*args, **kw)
             except:
                 traceback.print_exc()
                 raise
 
+        error_printer = without_this
+
     return error_printer
-
-
-from comtypes._comobject import _MethodFinder
 
 
 class _SinkMethodFinder(_MethodFinder):
@@ -187,11 +208,11 @@ class _SinkMethodFinder(_MethodFinder):
     event handlers.
     """
 
-    def __init__(self, inst, sink):
+    def __init__(self, inst: COMObject, sink: Any) -> None:
         super(_SinkMethodFinder, self).__init__(inst)
         self.sink = sink
 
-    def find_method(self, fq_name, mthname):
+    def find_method(self, fq_name: str, mthname: str) -> Callable[..., Any]:
         impl = self._find_method(fq_name, mthname)
         # Caller of this method catches AttributeError,
         # so we need to be careful in the following code
@@ -206,7 +227,7 @@ class _SinkMethodFinder(_MethodFinder):
         except AttributeError as details:
             raise RuntimeError(details)
 
-    def _find_method(self, fq_name, mthname):
+    def _find_method(self, fq_name: str, mthname: str) -> Callable[..., Any]:
         try:
             return super(_SinkMethodFinder, self).find_method(fq_name, mthname)
         except AttributeError:
@@ -216,11 +237,11 @@ class _SinkMethodFinder(_MethodFinder):
                 return getattr(self.sink, mthname)
 
 
-def CreateEventReceiver(interface, handler):
-    class Sink(comtypes.COMObject):
+def CreateEventReceiver(interface: Type[IUnknown], handler: Any) -> COMObject:
+    class Sink(COMObject):
         _com_interfaces_ = [interface]
 
-        def _get_method_finder_(self, itf):
+        def _get_method_finder_(self, itf: Type[IUnknown]) -> _MethodFinder:
             # Use a special MethodFinder that will first try 'self',
             # then the sink.
             return _SinkMethodFinder(self, handler)
@@ -229,25 +250,25 @@ def CreateEventReceiver(interface, handler):
 
     # Since our Sink object doesn't have typeinfo, it needs a
     # _dispimpl_ dictionary to dispatch events received via Invoke.
-    if issubclass(interface, comtypes.automation.IDispatch) and not hasattr(
-        sink, "_dispimpl_"
-    ):
+    if issubclass(interface, IDispatch) and not hasattr(sink, "_dispimpl_"):
         finder = sink._get_method_finder_(interface)
         dispimpl = sink._dispimpl_ = {}
         for m in interface._methods_:
-            restype, mthname, argtypes, paramflags, idlflags, helptext = m
             # Can dispid be at a different index? Should check code generator...
             # ...but hand-written code should also work...
-            dispid = idlflags[0]
-            impl = finder.get_impl(interface, mthname, paramflags, idlflags)
+            dispid = m.idlflags[0]
+            assert isinstance(dispid, comtypes.dispid)
+            impl = finder.get_impl(interface, m.name, m.paramflags, m.idlflags)
             # XXX Wouldn't work for 'propget', 'propput', 'propputref'
             # methods - are they allowed on event interfaces?
-            dispimpl[(dispid, comtypes.automation.DISPATCH_METHOD)] = impl
+            dispimpl[(dispid, DISPATCH_METHOD)] = impl
 
     return sink
 
 
-def GetEvents(source, sink, interface=None):
+def GetEvents(
+    source: IUnknown, sink: Any, interface: Optional[Type[IUnknown]] = None
+) -> _AdviseConnection:
     """Receive COM events from 'source'.  Events will call methods on
     the 'sink' object.  'interface' is the source interface to use.
     """
@@ -265,7 +286,7 @@ def GetEvents(source, sink, interface=None):
 class EventDumper(object):
     """Universal sink for COM events."""
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Callable[..., Any]:
         "Create event handler methods on demand"
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
@@ -279,13 +300,15 @@ class EventDumper(object):
         return comtypes.instancemethod(handler, self, EventDumper)
 
 
-def ShowEvents(source, interface=None):
+def ShowEvents(
+    source: IUnknown, interface: Optional[Type[IUnknown]] = None
+) -> _AdviseConnection:
     """Receive COM events from 'source'.  A special event sink will be
     used that first prints the names of events that are found in the
     outgoing interface, and will also print out the events when they
     are fired.
     """
-    return comtypes.client.GetEvents(source, sink=EventDumper(), interface=interface)
+    return GetEvents(source, sink=EventDumper(), interface=interface)
 
 
 # This type is used inside 'PumpEvents', but if we create the type
@@ -293,8 +316,24 @@ def ShowEvents(source, interface=None):
 # garbage for each call.  So we define it here instead.
 _handles_type = ctypes.c_void_p * 1
 
+# The type of control signal received by the handler.
+CTRL_C_EVENT = 0
+CTRL_BREAK_EVENT = 1
+CTRL_CLOSE_EVENT = 2
+CTRL_LOGOFF_EVENT = 5
+CTRL_SHUTDOWN_EVENT = 6
 
-def PumpEvents(timeout):
+# Specifiers for the behavior of the CoWaitForMultipleHandles function.
+# tagCOWAIT_FLAGS = ctypes.c_int
+COWAIT_DEFAULT = 0
+COWAIT_WAITALL = 1
+COWAIT_ALERTABLE = 2
+COWAIT_INPUTAVAILABLE = 4
+COWAIT_DISPATCH_CALLS = 8
+COWAIT_DISPATCH_WINDOW_MESSAGES = 16
+
+
+def PumpEvents(timeout: Any) -> None:
     """This following code waits for 'timeout' seconds in the way
     required for COM, internally doing the correct things depending
     on the COM appartment of the current thread.  It is possible to
@@ -323,11 +362,10 @@ def PumpEvents(timeout):
 
     hevt = _CreateEventA(None, True, False, None)
     handles = _handles_type(hevt)
-    RPC_S_CALLPENDING = -2147417835
 
     # @ctypes.WINFUNCTYPE(BOOL, DWORD)
     def HandlerRoutine(dwCtrlType):
-        if dwCtrlType == 0:  # CTRL+C
+        if dwCtrlType == CTRL_C_EVENT:  # CTRL+C
             _SetEvent(hevt)
             return 1
         return 0
@@ -336,15 +374,15 @@ def PumpEvents(timeout):
 
     try:
         try:
-            res = _CoWaitForMultipleHandles(
-                0,
+            _CoWaitForMultipleHandles(
+                COWAIT_DEFAULT,
                 int(timeout * 1000),
                 len(handles),
                 handles,
-                ctypes.byref(ctypes.c_ulong()),
+                byref(ctypes.c_ulong()),
             )
         except WindowsError as details:
-            if details.winerror != RPC_S_CALLPENDING:  # timeout expired
+            if details.winerror != hresult.RPC_S_CALLPENDING:  # timeout expired
                 raise
         else:
             raise KeyboardInterrupt

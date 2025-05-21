@@ -1,47 +1,57 @@
 import cv2
 import mediapipe as mp
-from typing import Optional, Tuple, List
-from mediapipe.python.solutions.pose import Pose, PoseLandmark  # ✅ Proper type support
+from mediapipe.python.solutions.pose import Pose
+from mediapipe.framework.formats.landmark_pb2 import NormalizedLandmark
+from typing import Tuple, List, Optional
 
-# ✅ MediaPipe Pose module
 mp_pose = mp.solutions.pose
 
-def get_pose_model() -> Pose:
-    """
-    Returns a configured MediaPipe Pose object.
-    """
-    return Pose(
-        static_image_mode=False,
-        model_complexity=2,
-        enable_segmentation=False,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.7
+# Factory function to configure the model
+def get_pose_model(
+    static_image_mode=False,
+    model_complexity=2,
+    enable_segmentation=False,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7,
+) -> Pose:
+    return mp_pose.Pose(
+        static_image_mode=static_image_mode,
+        model_complexity=model_complexity,
+        enable_segmentation=enable_segmentation,
+        smooth_landmarks=True,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
     )
 
-def detect_pose(frame, pose_model: Pose, debug: bool = False) -> Tuple[Optional[List], Optional[object]]:
+# Reuse one global model instance to avoid memory cost
+_default_pose_model = get_pose_model()
+
+def detect_pose(
+    frame,
+    pose_model: Pose = _default_pose_model,
+    debug: bool = False
+) -> Tuple[Optional[List[NormalizedLandmark]], Optional[object]]:
     """
-    Detect pose landmarks using MediaPipe BlazePose.
-
-    Args:
-        frame (np.ndarray): Input video frame.
-        pose_model (Pose): A MediaPipe pose model.
-        debug (bool): If True, prints debugging info.
-
-    Returns:
-        tuple: (landmarks list, full results) or (None, None)
+    Run MediaPipe pose detection on a single BGR frame.
+    Returns landmarks and full results.
     """
     try:
+        if frame is None:
+            return None, None
+
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose_model.process(image_rgb)
 
-        if results.pose_landmarks:
+        if results and results.pose_landmarks:
             if debug:
-                print("[INFO] ✅ Pose detected.")
+                print("[INFO] ✅ Pose detected")
             return results.pose_landmarks.landmark, results
         else:
             if debug:
-                print("[WARNING] ⚠️ No pose detected.")
+                print("[DEBUG] ⚠️ No pose detected")
             return None, None
+
     except Exception as e:
-        print(f"[ERROR] ❌ Pose detection failed: {e}")
+        if debug:
+            print(f"[ERROR] Pose detection failed: {e}")
         return None, None

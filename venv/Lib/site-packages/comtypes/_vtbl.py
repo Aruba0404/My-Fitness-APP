@@ -17,28 +17,25 @@ from typing import Union as _UnionT
 
 import comtypes
 from comtypes import GUID, IUnknown, hresult
-from comtypes._memberspec import _encode_idl
+from comtypes._memberspec import (
+    DISPATCH_METHOD,
+    DISPATCH_PROPERTYGET,
+    DISPATCH_PROPERTYPUT,
+    DISPATCH_PROPERTYPUTREF,
+    _encode_idl,
+)
 from comtypes.errorinfo import ReportError, ReportException
 
 if TYPE_CHECKING:
     from ctypes import _FuncPointer
 
     from comtypes import hints  # type: ignore
-    from comtypes._memberspec import _ArgSpecElmType, _DispMemberSpec, _ParamFlagType
+    from comtypes._memberspec import _ComIdlFlags, _DispIdlFlags, _DispMemberSpec
 
 logger = logging.getLogger(__name__)
 _debug = logger.debug
 _warning = logger.warning
 _error = logger.error
-
-################################################################
-# COM object implementation
-
-# so we don't have to import comtypes.automation
-DISPATCH_METHOD = 1
-DISPATCH_PROPERTYGET = 2
-DISPATCH_PROPERTYPUT = 4
-DISPATCH_PROPERTYPUTREF = 8
 
 
 class E_NotImplemented(Exception):
@@ -84,7 +81,7 @@ def _do_implement(interface_name: str, method_name: str) -> Callable[..., int]:
 def catch_errors(
     obj: "hints.COMObject",
     mth: Callable[..., Any],
-    paramflags: Optional[Tuple["_ParamFlagType", ...]],
+    paramflags: Optional[Tuple["hints.ParamFlagType", ...]],
     interface: Type[IUnknown],
     mthname: str,
 ) -> Callable[..., Any]:
@@ -133,7 +130,7 @@ def catch_errors(
 def hack(
     inst: "hints.COMObject",
     mth: Callable[..., Any],
-    paramflags: Optional[Tuple["_ParamFlagType", ...]],
+    paramflags: Optional[Tuple["hints.ParamFlagType", ...]],
     interface: Type[IUnknown],
     mthname: str,
 ) -> Callable[..., Any]:
@@ -241,8 +238,8 @@ class _MethodFinder(object):
         self,
         interface: Type[IUnknown],
         mthname: str,
-        paramflags: Optional[Tuple["_ParamFlagType", ...]],
-        idlflags: Tuple[_UnionT[str, int], ...],
+        paramflags: Optional[Tuple["hints.ParamFlagType", ...]],
+        idlflags: _UnionT["_ComIdlFlags", "_DispIdlFlags"],
     ) -> Callable[..., Any]:
         mth = self.find_impl(interface, mthname, paramflags, idlflags)
         if mth is None:
@@ -263,8 +260,8 @@ class _MethodFinder(object):
         self,
         interface: Type[IUnknown],
         mthname: str,
-        paramflags: Optional[Tuple["_ParamFlagType", ...]],
-        idlflags: Tuple[_UnionT[str, int], ...],
+        paramflags: Optional[Tuple["hints.ParamFlagType", ...]],
+        idlflags: _UnionT["_ComIdlFlags", "_DispIdlFlags"],
     ) -> Optional[Callable[..., Any]]:
         fq_name = f"{interface.__name__}_{mthname}"
         if interface._case_insensitive_:
@@ -340,25 +337,29 @@ def create_vtbl_mapping(
     methods: List[Callable[..., Any]] = []  # method implementations
     fields: List[Tuple[str, Type["_FuncPointer"]]] = []  # virtual function table
     iids: List[GUID] = []  # interface identifiers.
-    # iterate over interface inheritance in reverse order to build the
-    # virtual function table, and leave out the 'object' base class.
-    for interface in itf.__mro__[-2::-1]:
+    for interface in _walk_itf_bases(itf):
         iids.append(interface._iid_)
         for m in interface._methods_:
-            restype, mthname, argtypes, paramflags, idlflags, helptext = m
-            proto = WINFUNCTYPE(restype, c_void_p, *argtypes)
-            fields.append((mthname, proto))
-            mth = finder.get_impl(interface, mthname, paramflags, idlflags)
+            proto = WINFUNCTYPE(m.restype, c_void_p, *m.argtypes)
+            fields.append((m.name, proto))
+            mth = finder.get_impl(interface, m.name, m.paramflags, m.idlflags)
             methods.append(proto(mth))
     Vtbl = _create_vtbl_type(tuple(fields), itf)
     vtbl = Vtbl(*methods)
     return (iids, vtbl)
 
 
+def _walk_itf_bases(itf: Type[IUnknown]) -> Iterator[Type[IUnknown]]:
+    """Iterates over interface inheritance in reverse order to build the
+    virtual function table, and leave out the 'object' base class.
+    """
+    yield from itf.__mro__[-2::-1]
+
+
 def create_dispimpl(
     itf: Type[IUnknown], finder: _MethodFinder
-) -> Dict[Tuple[int, int], Callable[..., Any]]:
-    dispimpl: Dict[Tuple[int, int], Callable[..., Any]] = {}
+) -> Dict[Tuple[comtypes.dispid, int], Callable[..., Any]]:
+    dispimpl: Dict[Tuple[comtypes.dispid, int], Callable[..., Any]] = {}
     for m in itf._disp_methods_:
         #################
         # What we have:
@@ -374,13 +375,6 @@ def create_dispimpl(
         #
         # paramflags must be a sequence
         # of (F_IN|F_OUT|F_RETVAL, paramname[, default-value]) tuples
-        #
-        # comtypes has this function which helps:
-        #    def _encode_idl(names):
-        #        # convert to F_xxx and sum up "in", "out",
-        #        # "retval" values found in _PARAMFLAGS, ignoring
-        #        # other stuff.
-        #        return sum([_PARAMFLAGS.get(n, 0) for n in names])
         #################
 
         if m.what == "DISPMETHOD":
@@ -392,37 +386,40 @@ def create_dispimpl(
 
 def _make_dispmthentry(
     itf: Type[IUnknown], finder: _MethodFinder, m: "_DispMemberSpec"
-) -> Iterator[Tuple[Tuple[int, int], Callable[..., Any]]]:
-    _, mthname, idlflags, restype, argspec = m
-    if "propget" in idlflags:
+) -> Iterator[Tuple[Tuple[comtypes.dispid, int], Callable[..., Any]]]:
+    if "propget" in m.idlflags:
         invkind = DISPATCH_PROPERTYGET
-        mthname = f"_get_{mthname}"
-    elif "propput" in idlflags:
+        mthname = f"_get_{m.name}"
+    elif "propput" in m.idlflags:
         invkind = DISPATCH_PROPERTYPUT
-        mthname = f"_set_{mthname}"
-    elif "propputref" in idlflags:
+        mthname = f"_set_{m.name}"
+    elif "propputref" in m.idlflags:
         invkind = DISPATCH_PROPERTYPUTREF
-        mthname = f"_setref_{mthname}"
+        mthname = f"_setref_{m.name}"
     else:
         invkind = DISPATCH_METHOD
-        if restype:
-            argspec = argspec + ((["out"], restype, ""),)
-    yield from _make_dispentry(finder, itf, mthname, idlflags, argspec, invkind)
+        if m.restype:
+            argspec = m.argspec + ((["out"], m.restype, ""),)
+        else:
+            argspec = m.argspec
+        mthname = m.name
+    yield from _make_dispentry(finder, itf, mthname, m.idlflags, argspec, invkind)
 
 
 def _make_disppropentry(
     itf: Type[IUnknown], finder: _MethodFinder, m: "_DispMemberSpec"
-) -> Iterator[Tuple[Tuple[int, int], Callable[..., Any]]]:
-    _, mthname, idlflags, restype, argspec = m
-    # DISPPROPERTY have implicit "out"
-    if restype:
-        argspec += ((["out"], restype, ""),)
+) -> Iterator[Tuple[Tuple[comtypes.dispid, int], Callable[..., Any]]]:
+    if m.restype:
+        # DISPPROPERTY have implicit "out"
+        argspec = m.argspec + ((["out"], m.restype, ""),)
+    else:
+        argspec = m.argspec
     yield from _make_dispentry(
-        finder, itf, f"_get_{mthname}", idlflags, argspec, DISPATCH_PROPERTYGET
+        finder, itf, f"_get_{m.name}", m.idlflags, argspec, DISPATCH_PROPERTYGET
     )
-    if "readonly" not in idlflags:
+    if "readonly" not in m.idlflags:
         yield from _make_dispentry(
-            finder, itf, f"_set_{mthname}", idlflags, argspec, DISPATCH_PROPERTYPUT
+            finder, itf, f"_set_{m.name}", m.idlflags, argspec, DISPATCH_PROPERTYPUT
         )
         # Add DISPATCH_PROPERTYPUTREF also?
 
@@ -431,10 +428,10 @@ def _make_dispentry(
     finder: _MethodFinder,
     interface: Type[IUnknown],
     mthname: str,
-    idlflags: Tuple[_UnionT[str, int], ...],
-    argspec: Tuple["_ArgSpecElmType", ...],
+    idlflags: "_DispIdlFlags",
+    argspec: Tuple["hints.ArgSpecElmType", ...],
     invkind: int,
-) -> Iterator[Tuple[Tuple[int, int], Callable[..., Any]]]:
+) -> Iterator[Tuple[Tuple[comtypes.dispid, int], Callable[..., Any]]]:
     # We build a _dispmap_ entry now that maps invkind and dispid to
     # implementations that the finder finds; IDispatch_Invoke will later call it.
     paramflags = tuple(((_encode_idl(x[0]), x[1]) + tuple(x[3:])) for x in argspec)

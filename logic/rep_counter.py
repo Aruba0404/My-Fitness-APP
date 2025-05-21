@@ -21,7 +21,6 @@ class BaseAnalyzer:
         return sum(self.prev_angles) / len(self.prev_angles)
 
     def get_common_outputs(self, correct, incorrect, feedback, posture_state):
-        # Only trigger feedback when posture actually changes
         if posture_state != self.last_posture:
             self.feedback_given = False
             self.last_posture = posture_state
@@ -34,37 +33,48 @@ class BaseAnalyzer:
 
         return correct, incorrect, feedback, posture_state
 
+
 class SquatAnalyzer(BaseAnalyzer):
     def __init__(self):
-        super().__init__(up_threshold=160, down_threshold=90, valid_range=(80, 100))
+        super().__init__(up_threshold=165, down_threshold=90, valid_range=(80, 100))
 
     def update(self, landmarks, width, height):
         try:
-            hip, knee, ankle = landmarks[23], landmarks[25], landmarks[27]
-            angle = self._smooth_angle(calculate_angle(hip, knee, ankle))
+            hip = (int(landmarks[23].x * width), int(landmarks[23].y * height))
+            knee = (int(landmarks[25].x * width), int(landmarks[25].y * height))
+            ankle = (int(landmarks[27].x * width), int(landmarks[27].y * height))
 
+            angle = self._smooth_angle(calculate_angle(hip, knee, ankle))
             posture, feedback = "unknown", ""
+
             if angle > self.up_threshold:
-                posture, feedback = "up", "Stand tall and prepare to squat"
+                posture, feedback = "standing", "Stand tall and prepare to squat"
                 if self.state == "DOWN":
                     self.rep_count += 1
                 self.state = "UP"
+
             elif self.valid_range[0] <= angle <= self.valid_range[1]:
-                posture, feedback = "perfect", "Perfect squat! ✅"
+                posture, feedback = "perfect", "✅ Perfect squat!"
                 if self.state == "UP":
                     self.state = "DOWN"
+
             elif angle > self.valid_range[1]:
-                posture, feedback = "too_shallow", "Go lower to reach squat depth ⬇️"
-            elif angle < self.valid_range[0]:
-                posture, feedback = "too_low", "You're going too low ❌"
+                posture, feedback = "too_shallow", "⬇️ Go deeper to reach 90°"
+
+            elif angle < 70:
+                posture, feedback = "too_low", "❌ Too deep! Stay above 70°"
                 if self.state == "UP":
                     self.incorrect_count += 1
                     self.state = "DOWN"
+
+            elif angle < self.valid_range[0]:
+                posture, feedback = "almost_there", "⬇️ Lower just a bit more"
 
             return self.get_common_outputs(self.rep_count, self.incorrect_count, feedback, posture)
 
         except Exception as e:
             return self.get_common_outputs(self.rep_count, self.incorrect_count, f"[Squat ERROR] {e}", "error")
+
 
 class PushupAnalyzer(BaseAnalyzer):
     def __init__(self):
@@ -72,23 +82,29 @@ class PushupAnalyzer(BaseAnalyzer):
 
     def update(self, landmarks, width, height):
         try:
-            shoulder, elbow, wrist = landmarks[11], landmarks[13], landmarks[15]
-            angle = self._smooth_angle(calculate_angle(shoulder, elbow, wrist))
+            shoulder = (int(landmarks[11].x * width), int(landmarks[11].y * height))
+            elbow = (int(landmarks[13].x * width), int(landmarks[13].y * height))
+            wrist = (int(landmarks[15].x * width), int(landmarks[15].y * height))
 
+            angle = self._smooth_angle(calculate_angle(shoulder, elbow, wrist))
             posture, feedback = "unknown", ""
+
             if angle > self.up_threshold:
-                posture, feedback = "up", "Hold plank and stay strong 💪"
+                posture, feedback = "up", "💪 Hold plank and stay strong"
                 if self.state == "DOWN":
                     self.rep_count += 1
                 self.state = "UP"
+
             elif self.valid_range[0] <= angle <= self.valid_range[1]:
-                posture, feedback = "perfect", "Perfect push-up! ✅"
+                posture, feedback = "perfect", "✅ Perfect push-up!"
                 if self.state == "UP":
                     self.state = "DOWN"
+
             elif angle > self.valid_range[1]:
-                posture, feedback = "too_shallow", "Go lower for a full push-up ⬇️"
+                posture, feedback = "too_shallow", "⬇️ Go lower for full push-up"
+
             elif angle < self.valid_range[0]:
-                posture, feedback = "too_low", "Too low! Raise slightly ❌"
+                posture, feedback = "too_low", "❌ Too low! Lift up slightly"
                 if self.state == "UP":
                     self.incorrect_count += 1
                     self.state = "DOWN"

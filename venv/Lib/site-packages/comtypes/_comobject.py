@@ -5,7 +5,6 @@ from ctypes import (
     POINTER,
     FormatError,
     OleDLL,
-    Structure,
     WinDLL,
     byref,
     c_long,
@@ -29,11 +28,21 @@ from typing import (
 )
 from typing import Union as _UnionT
 
+import comtypes
 from comtypes import GUID, IPersist, IUnknown, _CoUninitialize, hresult
+from comtypes._memberspec import DISPATCH_METHOD as DISPATCH_METHOD
+from comtypes._memberspec import DISPATCH_PROPERTYGET as DISPATCH_PROPERTYGET
+from comtypes._memberspec import DISPATCH_PROPERTYPUT as DISPATCH_PROPERTYPUT
+from comtypes._memberspec import DISPATCH_PROPERTYPUTREF as DISPATCH_PROPERTYPUTREF
 from comtypes._vtbl import _MethodFinder, create_dispimpl, create_vtbl_mapping
 from comtypes.automation import DISPID, DISPPARAMS, EXCEPINFO, VARIANT
 from comtypes.errorinfo import ISupportErrorInfo
-from comtypes.typeinfo import IProvideClassInfo, IProvideClassInfo2, ITypeInfo
+from comtypes.typeinfo import (
+    GUIDKIND_DEFAULT_SOURCE_DISP_IID,
+    IProvideClassInfo,
+    IProvideClassInfo2,
+    ITypeInfo,
+)
 
 if TYPE_CHECKING:
     from ctypes import _CArgObject, _Pointer
@@ -46,11 +55,6 @@ _debug = logger.debug
 ################################################################
 # COM object implementation
 
-# so we don't have to import comtypes.automation
-DISPATCH_METHOD = 1
-DISPATCH_PROPERTYGET = 2
-DISPATCH_PROPERTYPUT = 4
-DISPATCH_PROPERTYPUTREF = 8
 
 ################################################################
 
@@ -210,18 +214,18 @@ class COMObject(object):
     _reg_clsid_: ClassVar[GUID]
     _reg_typelib_: ClassVar[Tuple[str, int, int]]
     __typelib: "hints.ITypeLib"
-    _com_pointers_: Dict[GUID, "_Pointer[_Pointer[Structure]]"]
-    _dispimpl_: Dict[Tuple[int, int], Callable[..., Any]]
+    _com_pointers_: Dict[GUID, "hints.LP_LP_Vtbl"]
+    _dispimpl_: Dict[Tuple[comtypes.dispid, int], Callable[..., Any]]
 
-    def __new__(cls, *args, **kw):
+    def __new__(cls, *args: Any, **kw: Any) -> "hints.Self":
         self = super(COMObject, cls).__new__(cls)
         if isinstance(self, c_void_p):
             # We build the VTables only for direct instances of
             # CoClass, not for POINTERs to CoClass.
-            return self
+            return self  # type: ignore
         if hasattr(self, "_com_interfaces_"):
             self.__prepare_comobject()
-        return self
+        return self  # type: ignore
 
     def __prepare_comobject(self) -> None:
         # When a CoClass instance is created, COM pointers to all
@@ -326,10 +330,10 @@ class COMObject(object):
     def IUnknown_AddRef(
         self,
         this: Any,
-        __InterlockedIncrement: Callable[[c_long], int] = _InterlockedIncrement,
+        _increment: Callable[[c_long], int] = _InterlockedIncrement,
         _debug=_debug,
     ) -> int:
-        result = __InterlockedIncrement(self._refcnt)
+        result = _increment(self._refcnt)
         if result == 1:
             self.__keep__(self)
         _debug("%r.AddRef() -> %s", self, result)
@@ -343,14 +347,14 @@ class COMObject(object):
     def IUnknown_Release(
         self,
         this: Any,
-        __InterlockedDecrement: Callable[[c_long], int] = _InterlockedDecrement,
+        _decrement: Callable[[c_long], int] = _InterlockedDecrement,
         _debug=_debug,
     ) -> int:
         # If this is called at COM shutdown, _InterlockedDecrement()
         # must still be available, although module level variables may
         # have been deleted already - so we supply it as default
         # argument.
-        result = __InterlockedDecrement(self._refcnt)
+        result = _decrement(self._refcnt)
         _debug("%r.Release() -> %s", self, result)
         if result == 0:
             self._final_release_()
@@ -417,8 +421,7 @@ class COMObject(object):
     # IProvideClassInfo2::GetGUID implementation
 
     def IProvideClassInfo2_GetGUID(self, dwGuidKind: int) -> GUID:
-        # GUIDKIND_DEFAULT_SOURCE_DISP_IID = 1
-        if dwGuidKind != 1:
+        if dwGuidKind != GUIDKIND_DEFAULT_SOURCE_DISP_IID:
             raise WindowsError(hresult.E_INVALIDARG)
         return self._outgoing_interfaces_[0]._iid_
 
@@ -516,10 +519,7 @@ class COMObject(object):
         #
         params = pDispParams[0]
 
-        if wFlags & (4 | 8):
-            # DISPATCH_PROPERTYPUT
-            # DISPATCH_PROPERTYPUTREF
-            #
+        if wFlags & (DISPATCH_PROPERTYPUT | DISPATCH_PROPERTYPUTREF):
             # How are the parameters unpacked for propertyput
             # operations with additional parameters?  Can propput
             # have additional args?
@@ -530,9 +530,7 @@ class COMObject(object):
             # DISPATCH_PROPERTYPUTREF is specified.
             return mth(this, *args)
 
-        else:
-            # DISPATCH_METHOD
-            # DISPATCH_PROPERTYGET
+        else:  # wFlags & (DISPATCH_METHOD | DISPATCH_PROPERTYGET)
             # the positions of named arguments
             #
             # 2to3 has problems to translate 'range(...)[::-1]'

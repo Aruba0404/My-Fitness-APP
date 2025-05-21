@@ -1,8 +1,8 @@
 import streamlit as st
 from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from utils.timer_utils import PlankAnalyzer
+from utils.plank_timer import PlankAnalyzer
 
-# Initialize analyzers only once
+# Initialize posture analyzers in Streamlit session state
 if "squat_tracker" not in st.session_state:
     st.session_state.squat_tracker = SquatAnalyzer()
 
@@ -13,6 +13,10 @@ if "plank_tracker" not in st.session_state:
     st.session_state.plank_tracker = PlankAnalyzer()
 
 def evaluate_posture(landmarks, width, height, exercise):
+    """
+    Analyze posture based on selected exercise and return:
+    - (correct_reps, incorrect_reps, feedback_text, posture_state)
+    """
     if not landmarks or len(landmarks) < 33:
         return 0, 0, "⚠️ Pose not fully visible.", "not_visible"
 
@@ -37,30 +41,31 @@ def evaluate_posture(landmarks, width, height, exercise):
     except Exception as e:
         return 0, 0, f"❌ {exercise.capitalize()} tracking error: {str(e)}", "error"
 
-# Feedback dictionaries
+
+# Feedback helpers per exercise
 def get_squat_feedback(state, fallback):
     return {
-        "too_shallow": "⬇️ Lower your hips to reach squat depth.",
-        "too_low": "⬆️ You're going too low — raise slightly.",
-        "mid": "↕️ Almost there. Go slightly deeper.",
-        "perfect": "✅ Perfect squat! Hold it.",
-        "standing": "🧍 Stand tall. Ready for next rep."
+        "too_shallow": "⬇️ Lower your hips to reach proper squat depth.",
+        "too_low": "🛑 Too deep — rise up slightly.",
+        "mid": "↕️ You're close! Just a bit lower.",
+        "perfect": "✅ Great squat! Keep it up.",
+        "standing": "🧍 Stand tall. Get ready for the next rep!"
     }.get(state, fallback)
 
 def get_pushup_feedback(state, fallback):
     return {
-        "too_shallow": "⬇️ Go lower for a full push-up.",
-        "too_low": "⬆️ Too low — raise slightly.",
-        "mid": "↕️ Almost there — lower a bit more.",
-        "perfect": "✅ Perfect push-up!",
-        "up": "📏 Hold the plank position."
+        "too_shallow": "⬇️ Lower your chest closer to the ground.",
+        "too_low": "⬆️ You're too low — raise a bit.",
+        "mid": "↕️ Almost perfect — go lower slightly.",
+        "perfect": "✅ Excellent push-up!",
+        "up": "🧍 Hold steady in plank position."
     }.get(state, fallback)
 
 def get_plank_feedback(state, fallback):
     return {
-        "hips_up": "⬇️ Lower your hips to keep a flat back.",
+        "hips_up": "⬇️ Lower your hips — keep back flat.",
         "hips_down": "⬆️ Lift your hips to avoid sagging.",
-        "perfect": "✅ Perfect plank posture! Keep holding.",
-        "start": "📢 Get into plank position — back straight, core tight!",
-        "not_visible": "⚠️ Pose not fully visible."
+        "perfect": "✅ Perfect posture! Keep holding.",
+        "start": "🎯 Get into plank position — back straight, core tight.",
+        "not_visible": "⚠️ Pose not fully visible. Please adjust."
     }.get(state, fallback)
