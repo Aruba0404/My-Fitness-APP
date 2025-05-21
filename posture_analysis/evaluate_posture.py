@@ -1,6 +1,6 @@
 import streamlit as st
 from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from utils.plank_timer import PlankAnalyzer
+from utils.timer_utils import PlankAnalyzer
 
 # Initialize posture analyzers in Streamlit session state
 if "squat_tracker" not in st.session_state:
