@@ -1,24 +1,70 @@
-import numpy as np
+import math
+from collections import deque
 
 def calculate_angle(a, b, c):
     """
-    Calculate the 3D angle between Mediapipe landmarks a, b, and c.
-    Returns the angle in degrees (0° to 180°).
+    Calculate the angle between three points in 2D space.
+    :param a, b, c: Landmarks with .x and .y attributes (MediaPipe format)
+    :return: Angle in degrees or -1 on failure
     """
     try:
-        a = np.array([a.x, a.y, a.z])
-        b = np.array([b.x, b.y, b.z])
-        c = np.array([c.x, c.y, c.z])
+        a = [a.x, a.y]
+        b = [b.x, b.y]
+        c = [c.x, c.y]
 
-        ba = a - b
-        bc = c - b
+        ab = [a[0] - b[0], a[1] - b[1]]
+        cb = [c[0] - b[0], c[1] - b[1]]
 
-        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)  # numerical safety
+        dot_product = ab[0] * cb[0] + ab[1] * cb[1]
+        magnitude_ab = math.sqrt(ab[0]**2 + ab[1]**2)
+        magnitude_cb = math.sqrt(cb[0]**2 + cb[1]**2)
 
-        angle = np.degrees(np.arccos(cosine_angle))
-        return angle
+        if magnitude_ab == 0 or magnitude_cb == 0:
+            return -1
 
-    except Exception as e:
-        print(f"[Angle ERROR] {e}")
-        return None
+        angle_rad = math.acos(dot_product / (magnitude_ab * magnitude_cb))
+        return round(math.degrees(angle_rad), 2)
+    except:
+        return -1
+
+
+class SmoothedAngle:
+    """
+    Smooths out jitter by averaging recent angle values using a fixed-size buffer.
+    """
+    def __init__(self, maxlen=5):
+        self.buffer = deque(maxlen=maxlen)
+
+    def update(self, new_angle):
+        if new_angle == -1:
+            return -1
+        self.buffer.append(new_angle)
+        return round(sum(self.buffer) / len(self.buffer), 2)
+
+
+def is_angle_in_range(angle, min_angle, max_angle):
+    """
+    Check if an angle is within the desired range.
+    """
+    return min_angle <= angle <= max_angle
+
+
+def deviation_from_ideal(angle, ideal_angle):
+    """
+    Compute how far the angle is from the ideal.
+    """
+    if angle == -1:
+        return float('inf')
+    return abs(angle - ideal_angle)
+
+
+def posture_score(angle, ideal_angle, tolerance=15):
+    """
+    Return a posture score: 1 = perfect, 0.5 = close, 0 = poor
+    """
+    deviation = deviation_from_ideal(angle, ideal_angle)
+    if deviation <= tolerance / 2:
+        return 1.0
+    elif deviation <= tolerance:
+        return 0.5
+    return 0.0

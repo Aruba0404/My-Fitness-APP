@@ -1,34 +1,78 @@
-# AI Fitness Trainer Using MediaPipe: Squats Analysis
+# 🏋️‍♂️ AI Fitness Trainer - Real-Time Exercise Feedback System
 
-**This repository contains code for [AI Fitness Trainer Using MediaPipe: Squats Analysis](https://learnopencv.com/ai-fitness-trainer-using-mediapipe/) blogpost**
+This project is a real-time fitness form correction app that uses **MediaPipe**, **OpenCV**, and **Streamlit** to detect your posture during **Squats**, **Push-ups**, and **Planks**, and provide **visual** and **voice feedback** for better exercise form and injury prevention.
 
-## Building an AI Fitness Trainer Using MediaPipe Pose to Analyze Squats
+> 🎯 Final Year Project - BS Data Science (2025)
 
-The blog will help you build an AI-based Fitness Trainer application that analyzes squats. <br> <br> 
+---
 
-[<img src="https://learnopencv.com/wp-content/uploads/2022/07/download-button-e1657285155454.png" alt="download" width="200">](https://www.dropbox.com/scl/fo/zzzj97nb0qfvp6y5bb4i1/h?dl=1&rlkey=kocz4scgphsgt88xy9k6vktxx)
+## 💡 Features
+
+- 🧍‍♂️ Pose detection using **MediaPipe**
+- 📐 Real-time angle analysis and rep counting
+- ✅ Form correction feedback (visual + audio)
+- ⏱️ Plank duration timer
+- 🎙️ Friendly voice guidance (optional)
+- 📊 Correct vs Incorrect rep tracking
+- 🔴 Live webcam mode + 📁 Video upload mode
+- 💻 Clean, interactive Streamlit UI
+
+---
+
+## 📂 Folder Structure
+
+├── app.py
+├── pose_estimation/
+│ ├── detect_pose.py
+│ └── draw_landmarks.py
+├── posture_analysis/
+│ └── evaluate_posture.py
+├── logic/
+│ ├── angle_utils.py
+│ ├── rep_counter.py
+├── utils/
+├ └── text_to_speech.py
+├ └── timer_utils.py
+├── requirements.txt
+├── README.md
 
 
+---
 
-### Install required packages
+## 🚀 How to Run the App
 
-After unzipping the file `ai-fitness-trainer-using-mediapipe.zip`, run the following command:
-```
+### 🔧 Step 1: Clone the Repo
+
+```bash
+git clone https://github.com/https://github.com/Aruba0404
+
+
+### 📦 Step 2: Install Dependencies
+### Use pip to install the required packages:
+
 pip install -r requirements.txt
-```
 
-### Execution
+# ▶️ Step 3: Run the App
 
-```
-streamlit run 🏠️_Demo.py
-```
+streamlit run app.py
 
-# AI Courses by OpenCV
+#########################################################################################
 
-Want to become an expert in AI? [AI Courses by OpenCV](https://opencv.org/courses/) is a great place to start. 
+### 🛠️ Tech Stack
+Python 3.8+
 
-<a href="https://opencv.org/courses/">
-<p align="center"> 
-<img src="https://www.learnopencv.com/wp-content/uploads/2020/04/AI-Courses-By-OpenCV-Github.png">
-</p>
-</a>
+Streamlit – UI and interaction
+
+OpenCV – Video and image processing
+
+MediaPipe – Pose estimation
+
+pyttsx3 – Text-to-speech engine
+
+
+# 🎓 Authors
+ARUBA BIBI, ZAINAB BIBI
+
+Supervised by: [DR M.Ibrahim]
+
+#########################################################################################

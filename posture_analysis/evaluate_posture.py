@@ -1,71 +1,165 @@
-import streamlit as st
-from logic.rep_counter import SquatAnalyzer, PushupAnalyzer
-from utils.timer_utils import PlankAnalyzer
+from logic.angle_utils import calculate_angle, SmoothedAngle
 
-# Initialize posture analyzers in Streamlit session state
-if "squat_tracker" not in st.session_state:
-    st.session_state.squat_tracker = SquatAnalyzer()
+class SquatPostureEvaluator:
+    def __init__(self):
+        self.angle_smoother = SmoothedAngle(maxlen=5)
+        self.rep_state = "standing"
+        self.correct_reps = 0
+        self.incorrect_reps = 0
+        self.feedback = "🧍 Stand tall. Get ready!"
+        self.last_feedback_state = None
 
-if "pushup_tracker" not in st.session_state:
-    st.session_state.pushup_tracker = PushupAnalyzer()
+    def update(self, landmarks, width, height):
+        if not landmarks or len(landmarks) < 33:
+            return self.correct_reps, self.incorrect_reps, "⚠️ Pose not fully visible.", "not_visible"
 
-if "plank_tracker" not in st.session_state:
-    st.session_state.plank_tracker = PlankAnalyzer()
+        left_hip = calculate_angle(landmarks[23], landmarks[25], landmarks[27])
+        right_hip = calculate_angle(landmarks[24], landmarks[26], landmarks[28])
+        hip = min(left_hip, right_hip)
 
+        hip_smoothed = self.angle_smoother.update(hip)
+
+        if hip_smoothed == -1:
+            return self.correct_reps, self.incorrect_reps, "⚠️ Cannot detect squat posture.", "error"
+        elif hip_smoothed > 160:
+            state, feedback = "standing", "🧍 Stand tall. Ready for next rep!"
+        elif 120 < hip_smoothed <= 160:
+            state, feedback = "too_shallow", "⬇️ Lower your hips more."
+        elif 90 < hip_smoothed <= 120:
+            state, feedback = "mid", "↕️ Almost there! Just a bit deeper."
+        elif hip_smoothed <= 90:
+            state, feedback = "perfect", "✅ Nice squat!"
+        else:
+            state, feedback = "too_low", "🛑 Too low! Come up slightly."
+
+        if self.rep_state == "standing" and state in ["too_shallow", "mid", "perfect"]:
+            self.rep_state = "going_down"
+        elif self.rep_state == "going_down" and state == "perfect":
+            self.rep_state = "bottom"
+        elif self.rep_state == "bottom" and state == "standing":
+            self.correct_reps += 1
+            self.rep_state = "standing"
+
+        if state != self.last_feedback_state:
+            self.feedback = feedback
+            self.last_feedback_state = state
+
+        return self.correct_reps, self.incorrect_reps, self.feedback, state
+
+
+class PushupPostureEvaluator:
+    def __init__(self):
+        self.angle_smoother = SmoothedAngle(maxlen=5)
+        self.rep_state = "start"
+        self.correct_reps = 0
+        self.incorrect_reps = 0
+        self.feedback = "Get ready! Keep elbows close."
+        self.last_feedback_state = None
+
+    def update(self, landmarks, width, height):
+        if not landmarks or len(landmarks) < 33:
+            return self.correct_reps, self.incorrect_reps, "⚠️ Pose not fully visible.", "not_visible"
+
+        left_elbow = calculate_angle(landmarks[11], landmarks[13], landmarks[15])
+        right_elbow = calculate_angle(landmarks[12], landmarks[14], landmarks[16])
+        elbow_angle = min(left_elbow, right_elbow)
+
+        elbow_smoothed = self.angle_smoother.update(elbow_angle)
+
+        if elbow_smoothed == -1:
+            return self.correct_reps, self.incorrect_reps, "⚠️ Elbow not detected properly.", "error"
+        elif elbow_smoothed > 160:
+            state, feedback = "start", "🧍 Start position. Lower slowly!"
+        elif 90 < elbow_smoothed <= 160:
+            state, feedback = "going_down", "⬇️ Lower yourself with control."
+        elif elbow_smoothed <= 90:
+            state, feedback = "bottom", "✅ Great! Now push up!"
+        else:
+            state, feedback = "too_low", "⬆️ Too low! Come up slightly."
+
+        if self.rep_state == "start" and state == "going_down":
+            self.rep_state = "going_down"
+        elif self.rep_state == "going_down" and state == "bottom":
+            self.rep_state = "bottom"
+        elif self.rep_state == "bottom" and state == "start":
+            self.correct_reps += 1
+            self.rep_state = "start"
+
+        if state != self.last_feedback_state:
+            self.feedback = feedback
+            self.last_feedback_state = state
+
+        return self.correct_reps, self.incorrect_reps, self.feedback, state
+
+
+class PlankPostureEvaluator:
+    def __init__(self):
+        self.start_time = None
+        self.feedback = "📏 Keep your body straight!"
+        self.state = "start"
+
+    def update(self, landmarks):
+        import time
+
+        if not landmarks or len(landmarks) < 33:
+            self.start_time = None
+            return 0, "not_visible", "⚠️ Pose not fully visible."
+
+        left_angle = calculate_angle(landmarks[11], landmarks[23], landmarks[27])
+        right_angle = calculate_angle(landmarks[12], landmarks[24], landmarks[28])
+        plank_angle = max(left_angle, right_angle)
+
+        if plank_angle == -1:
+            self.start_time = None
+            return 0, "error", "⚠️ Cannot detect plank posture."
+
+        if 170 <= plank_angle <= 190:
+            state = "perfect"
+            if self.start_time is None:
+                self.start_time = time.time()
+            duration = time.time() - self.start_time
+            feedback = "✅ Great plank! Hold steady!"
+        elif plank_angle < 170:
+            state = "hips_down"
+            self.start_time = None
+            duration = 0
+            feedback = "⬆️ Raise your hips slightly."
+        else:
+            state = "hips_up"
+            self.start_time = None
+            duration = 0
+            feedback = "⬇️ Lower your hips slightly."
+
+        self.state = state
+        self.feedback = feedback
+        return round(duration, 1), state, feedback
+
+
+# Main wrapper function
 def evaluate_posture(landmarks, width, height, exercise):
-    """
-    Analyze posture based on selected exercise and return:
-    - (correct_reps, incorrect_reps, feedback_text, posture_state)
-    """
     if not landmarks or len(landmarks) < 33:
         return 0, 0, "⚠️ Pose not fully visible.", "not_visible"
 
     exercise = exercise.strip().lower()
 
+    global squat_evaluator, pushup_evaluator, plank_evaluator
+
+    if "squat_evaluator" not in globals():
+        squat_evaluator = SquatPostureEvaluator()
+    if "pushup_evaluator" not in globals():
+        pushup_evaluator = PushupPostureEvaluator()
+    if "plank_evaluator" not in globals():
+        plank_evaluator = PlankPostureEvaluator()
+
     try:
         if exercise == "squats":
-            correct, incorrect, raw_feedback, state = st.session_state.squat_tracker.update(landmarks, width, height)
-            return correct, incorrect, get_squat_feedback(state, raw_feedback), state
-
+            return squat_evaluator.update(landmarks, width, height)
         elif exercise == "pushups":
-            correct, incorrect, raw_feedback, state = st.session_state.pushup_tracker.update(landmarks, width, height)
-            return correct, incorrect, get_pushup_feedback(state, raw_feedback), state
-
+            return pushup_evaluator.update(landmarks, width, height)
         elif exercise == "planks":
-            duration, state, raw_feedback = st.session_state.plank_tracker.update(landmarks)
-            return duration, "-", get_plank_feedback(state, raw_feedback), state
-
+            return plank_evaluator.update(landmarks)
         else:
             return 0, 0, "⚠️ Unknown exercise selected.", "unknown"
-
     except Exception as e:
-        return 0, 0, f"❌ {exercise.capitalize()} tracking error: {str(e)}", "error"
-
-
-# Feedback helpers per exercise
-def get_squat_feedback(state, fallback):
-    return {
-        "too_shallow": "⬇️ Lower your hips to reach proper squat depth.",
-        "too_low": "🛑 Too deep — rise up slightly.",
-        "mid": "↕️ You're close! Just a bit lower.",
-        "perfect": "✅ Great squat! Keep it up.",
-        "standing": "🧍 Stand tall. Get ready for the next rep!"
-    }.get(state, fallback)
-
-def get_pushup_feedback(state, fallback):
-    return {
-        "too_shallow": "⬇️ Lower your chest closer to the ground.",
-        "too_low": "⬆️ You're too low — raise a bit.",
-        "mid": "↕️ Almost perfect — go lower slightly.",
-        "perfect": "✅ Excellent push-up!",
-        "up": "🧍 Hold steady in plank position."
-    }.get(state, fallback)
-
-def get_plank_feedback(state, fallback):
-    return {
-        "hips_up": "⬇️ Lower your hips — keep back flat.",
-        "hips_down": "⬆️ Lift your hips to avoid sagging.",
-        "perfect": "✅ Perfect posture! Keep holding.",
-        "start": "🎯 Get into plank position — back straight, core tight.",
-        "not_visible": "⚠️ Pose not fully visible. Please adjust."
-    }.get(state, fallback)
+        print(f"[Posture ERROR] {e}")
+        return 0, 0, f"❌ Error: {str(e)}", "error"
